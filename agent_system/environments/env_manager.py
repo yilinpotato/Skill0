@@ -51,12 +51,16 @@ class SearchEnvironmentManager(EnvironmentManagerBase):
         # Add retrieval memory or skills-only memory if configured
         if config.env.get('use_skills_only_memory', False):
             from agent_system.memory import SkillsOnlyMemory
+            som_cfg = config.env.skills_only_memory
             self.retrieval_memory = SkillsOnlyMemory(
-                skills_json_path=config.env.skills_only_memory.skills_json_path,
-                env="Search"
+                skills_json_path=som_cfg.skills_json_path,
+                retrieval_mode=som_cfg.get('retrieval_mode', 'template'),
+                embedding_model_path=som_cfg.get('embedding_model_path', None),
+                task_specific_top_k=som_cfg.get('task_specific_top_k', None),
             )
             self.retrieved_memories = None
-            print(f"[SearchEnvironmentManager] Skills-only memory enabled (lightweight)")
+            print(f"[SearchEnvironmentManager] Skills-only memory enabled "
+                  f"(mode={som_cfg.get('retrieval_mode', 'template')})")
         elif config.env.get('use_retrieval_memory', False):
             from agent_system.memory import RetrievalMemory
             self.retrieval_memory = RetrievalMemory(

@@ -31,22 +31,36 @@ conda install -c conda-forge faiss-cpu
 # conda install -c pytorch faiss-cpu;
 conda install -c conda-forge openjdk=11;
 
-# Download dataset into `data` folder via `gdown` command
+# Download dataset into `data` folder via `gdown` command.
+# If your server cannot reach Google Drive, download the files manually on
+# another machine and drop them into `data/` before rerunning this script —
+# the helper below skips any file that already exists.
 mkdir -p data;
 cd data;
+
+fetch() {
+  local fname="$1"
+  local gid="$2"
+  if [ -f "$fname" ]; then
+    echo "[setup] $fname already present, skipping download"
+  else
+    gdown "https://drive.google.com/uc?id=${gid}" -O "$fname"
+  fi
+}
+
 if [ "$data" == "small" ]; then
-  gdown https://drive.google.com/uc?id=1EgHdxQ_YxqIQlvvq5iKlCrkEKR6-j0Ib; # items_shuffle_1000 - product scraped info
-  gdown https://drive.google.com/uc?id=1IduG0xl544V_A_jv3tHXC0kyFi7PnyBu; # items_ins_v2_1000 - product attributes
+  fetch items_shuffle_1000.json        1EgHdxQ_YxqIQlvvq5iKlCrkEKR6-j0Ib
+  fetch items_ins_v2_1000.json         1IduG0xl544V_A_jv3tHXC0kyFi7PnyBu
 elif [ "$data" == "all" ]; then
-  gdown https://drive.google.com/uc?id=1EgHdxQ_YxqIQlvvq5iKlCrkEKR6-j0Ib; # items_shuffle_1000 - product scraped info
-  gdown https://drive.google.com/uc?id=1IduG0xl544V_A_jv3tHXC0kyFi7PnyBu; # items_ins_v2_1000 - product attributes
-  gdown https://drive.google.com/uc?id=1A2whVgOO0euk5O13n2iYDM0bQRkkRduB; # items_shuffle
-  gdown https://drive.google.com/uc?id=1s2j6NgHljiZzQNL3veZaAiyW_qDEgBNi; # items_ins_v2
+  fetch items_shuffle_1000.json        1EgHdxQ_YxqIQlvvq5iKlCrkEKR6-j0Ib
+  fetch items_ins_v2_1000.json         1IduG0xl544V_A_jv3tHXC0kyFi7PnyBu
+  fetch items_shuffle.json             1A2whVgOO0euk5O13n2iYDM0bQRkkRduB
+  fetch items_ins_v2.json              1s2j6NgHljiZzQNL3veZaAiyW_qDEgBNi
 else
   echo "[ERROR]: argument for `-d` flag not recognized"
   helpFunction
 fi
-gdown https://drive.google.com/uc?id=14Kb5SPBk_jfdLZ_CDBNitW98QLDlKR5O # items_human_ins
+fetch items_human_ins.json             14Kb5SPBk_jfdLZ_CDBNitW98QLDlKR5O
 cd ..
 
 # Download spaCy large NLP model
