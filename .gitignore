@@ -43,3 +43,12 @@ diagnostics/
 *.jsonl
 
 # Keep documented env / requirements files tracked; do not ignore them.
+
+# Model weights and binaries
+*.safetensors
+*.pth
+*.pt
+*.ckpt
+*.bin
+chromedriver
+geckodriver
