@@ -33,17 +33,24 @@ if __name__ == '__main__':
     print(f"processing data for mode: {args.mode}")
     args.local_dir = os.path.join(args.local_dir, args.mode)
 
-    data_source = 'hiyouga/geometry3k'
-    """
-    **NOTE**: This is a frequently asked question.
-    We do NOT use the data in 'hiyouga/geometry3k', instead we only use it to indicate the modality and the data size.
-    See details: https://github.com/langfengQ/verl-agent?tab=readme-ov-file#2-data-preparation
-    """
+    # We only use geometry3k to determine modality/size, not its content.
+    # Skip download if output parquet files already exist.
+    train_parquet = os.path.join(args.local_dir, 'train.parquet')
+    test_parquet = os.path.join(args.local_dir, 'test.parquet')
+    if os.path.exists(train_parquet) and os.path.exists(test_parquet):
+        print(f"Data already exists at {args.local_dir}, skipping.")
+        exit(0)
 
-    dataset = datasets.load_dataset(data_source)
-
-    train_dataset = dataset['train'].select(range(args.train_data_size))
-    test_dataset = dataset['test'].select(range(args.val_data_size))
+    try:
+        dataset = datasets.load_dataset('hiyouga/geometry3k')
+        train_dataset = dataset['train'].select(range(args.train_data_size))
+        test_dataset = dataset['test'].select(range(args.val_data_size))
+    except Exception:
+        # Offline fallback: generate placeholder rows (content unused by env)
+        import datasets as ds
+        dummy = {'problem': '', 'answer': '', 'images': []}
+        train_dataset = ds.Dataset.from_list([dummy] * args.train_data_size)
+        test_dataset = ds.Dataset.from_list([dummy] * args.val_data_size)
 
     instruction_following = {
         "visual": "<image>",
