@@ -13,8 +13,9 @@ cd "$REPO_ROOT"
 # 配置
 # ============================================================================
 
-export MODEL_PATH="${MODEL_PATH:-$HOME/.cache/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507}"
 export PROJECT_ROOT="${PROJECT_ROOT:-$REPO_ROOT}"
+export CACHE_ROOT="${CACHE_ROOT:-/GLOBALFS/hit_wxia_1/.cache}"
+export MODEL_PATH="${MODEL_PATH:-$CACHE_ROOT/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507}"
 export DATA_ROOT="${DATA_ROOT:-$PROJECT_ROOT/skillrl_data/verl-agent}"
 export OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/skillrl_outputs}"
 export SKILLS_JSON="${SKILLS_JSON:-memory_data/alfworld/claude_style_skills.json}"

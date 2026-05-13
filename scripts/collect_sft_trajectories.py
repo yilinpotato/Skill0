@@ -6,7 +6,7 @@ episodes, and saves them as multi-turn parquet for fsdp_sft_trainer.
 
 Usage:
     python3 scripts/collect_sft_trajectories.py \
-        --model-path ~/.cache/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507 \
+        --model-path /GLOBALFS/hit_wxia_1/.cache/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507 \
         --skills-json memory_data/alfworld/claude_style_skills.json \
         --output-dir skillrl_outputs/expert_trajectories \
         --num-envs 16 \
@@ -27,7 +27,10 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument(
         "--model-path",
-        default=os.environ.get("MODEL_PATH", str(Path.home() / ".cache/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507")),
+        default=os.environ.get(
+            "MODEL_PATH",
+            str(Path(os.environ.get("CACHE_ROOT", "/GLOBALFS/hit_wxia_1/.cache")) / "modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507"),
+        ),
     )
     p.add_argument("--skills-json", default="memory_data/alfworld/claude_style_skills.json")
     default_output_dir = Path(os.environ.get("OUTPUT_ROOT", Path(__file__).resolve().parent.parent / "skillrl_outputs")) / "expert_trajectories"

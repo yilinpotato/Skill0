@@ -15,8 +15,9 @@ source "${CONDA_SH_PATH:-$HOME/miniconda3/etc/profile.d/conda.sh}"
 conda activate skillRL
 set -u
 
-export MODEL_PATH="${MODEL_PATH:-$HOME/.cache/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507}"
-export ALFWORLD_DATA="${ALFWORLD_DATA:-$REPO_ROOT/.cache/alfworld}"
+export CACHE_ROOT="${CACHE_ROOT:-/GLOBALFS/hit_wxia_1/.cache}"
+export MODEL_PATH="${MODEL_PATH:-$CACHE_ROOT/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507}"
+export ALFWORLD_DATA="${ALFWORLD_DATA:-$CACHE_ROOT/alfworld}"
 export DATA_ROOT="${DATA_ROOT:-$REPO_ROOT/skillrl_data/verl-agent}"
 export OUTPUT_ROOT="${OUTPUT_ROOT:-$REPO_ROOT/skillrl_outputs}"
 export EXPERIMENT_NAME="${EXPERIMENT_NAME:-alfworld_smoke}"

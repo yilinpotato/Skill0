@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-PROJECT_CACHE_ROOT="${PROJECT_CACHE_ROOT:-$REPO_ROOT/.cache}"
+PROJECT_CACHE_ROOT="${PROJECT_CACHE_ROOT:-${CACHE_ROOT:-/GLOBALFS/hit_wxia_1/.cache}}"
 ALFWORLD_CACHE="${ALFWORLD_DATA:-$PROJECT_CACHE_ROOT/alfworld}"
 
 mkdir -p "$PROJECT_CACHE_ROOT"

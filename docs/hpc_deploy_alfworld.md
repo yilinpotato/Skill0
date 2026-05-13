@@ -103,20 +103,19 @@ pip install -e .
 
 ### 5.1 下载官方 ALFWorld 资源
 
-首次部署建议把 ALFWorld 数据放在项目目录下，避免依赖登录节点或容器的 `$HOME` cache：
+首次部署建议把 ALFWorld 数据放在共享 cache 目录下，避免依赖登录节点或容器的 `$HOME` cache：
 
 ```bash
-cd /GLOBALFS/hit_wxia_1/myl/SkillRL
-mkdir -p .cache/alfworld
-ALFWORLD_DATA=$PWD/.cache/alfworld alfworld-download -f
+mkdir -p /GLOBALFS/hit_wxia_1/.cache/alfworld
+ALFWORLD_DATA=/GLOBALFS/hit_wxia_1/.cache/alfworld alfworld-download -f
 ```
 
 下载完成后需要确认以下目录存在：
 
 ```text
-/GLOBALFS/hit_wxia_1/myl/SkillRL/.cache/alfworld/json_2.1.1/
-/GLOBALFS/hit_wxia_1/myl/SkillRL/.cache/alfworld/logic/
-/GLOBALFS/hit_wxia_1/myl/SkillRL/.cache/alfworld/detectors/
+/GLOBALFS/hit_wxia_1/.cache/alfworld/json_2.1.1/
+/GLOBALFS/hit_wxia_1/.cache/alfworld/logic/
+/GLOBALFS/hit_wxia_1/.cache/alfworld/detectors/
 ```
 
 ### 5.2 配置 ALFWorld 数据路径
@@ -130,13 +129,13 @@ $ALFWORLD_DATA
 超算默认配置为：
 
 ```bash
-export ALFWORLD_DATA=/GLOBALFS/hit_wxia_1/myl/SkillRL/.cache/alfworld
+export ALFWORLD_DATA=/GLOBALFS/hit_wxia_1/.cache/alfworld
 ```
 
 也可以不手动设置。当前训练脚本会默认使用：
 
 ```text
-$PROJECT_ROOT/.cache/alfworld
+$CACHE_ROOT/alfworld
 ```
 
 ### 5.3 本仓库自带的 cache 准备脚本
@@ -147,22 +146,22 @@ $PROJECT_ROOT/.cache/alfworld
 source scripts/setup_alfworld_cache.sh
 ```
 
-该脚本现在只做项目内 cache 准备：
+该脚本现在只做共享 cache 准备：
 
 ```text
-PROJECT_CACHE_ROOT=${PROJECT_CACHE_ROOT:-$REPO_ROOT/.cache}
+PROJECT_CACHE_ROOT=${PROJECT_CACHE_ROOT:-${CACHE_ROOT:-/GLOBALFS/hit_wxia_1/.cache}}
 ALFWORLD_DATA=${ALFWORLD_DATA:-$PROJECT_CACHE_ROOT/alfworld}
 ```
 
-如果 `json_2.1.1` 或 `logic` 缺失，脚本会提示执行 `ALFWORLD_DATA=$PROJECT_ROOT/.cache/alfworld alfworld-download -f`。
+如果 `json_2.1.1` 或 `logic` 缺失，脚本会提示执行 `ALFWORLD_DATA=/GLOBALFS/hit_wxia_1/.cache/alfworld alfworld-download -f`。
 
 ## 6. 模型与输出目录
 
 当前主训练脚本需要以下路径变量：
 
 ```bash
-export MODEL_PATH=$HOME/.cache/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507
-export ALFWORLD_DATA=/GLOBALFS/hit_wxia_1/myl/SkillRL/.cache/alfworld
+export MODEL_PATH=/GLOBALFS/hit_wxia_1/.cache/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507
+export ALFWORLD_DATA=/GLOBALFS/hit_wxia_1/.cache/alfworld
 export DATA_ROOT=/GLOBALFS/hit_wxia_1/myl/SkillRL/skillrl_data/verl-agent
 export OUTPUT_ROOT=/GLOBALFS/hit_wxia_1/myl/SkillRL/skillrl_outputs
 ```
@@ -233,8 +232,8 @@ bash examples/grpo_trainer/run_alfworld_smoke.sh
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 \
-MODEL_PATH=$HOME/.cache/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507 \
-ALFWORLD_DATA=/GLOBALFS/hit_wxia_1/myl/SkillRL/.cache/alfworld \
+MODEL_PATH=/GLOBALFS/hit_wxia_1/.cache/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507 \
+ALFWORLD_DATA=/GLOBALFS/hit_wxia_1/.cache/alfworld \
 DATA_ROOT=/GLOBALFS/hit_wxia_1/myl/SkillRL/skillrl_data/verl-agent \
 OUTPUT_ROOT=/GLOBALFS/hit_wxia_1/myl/SkillRL/skillrl_outputs \
 EXPERIMENT_NAME=alfworld_qwen3_4b_thinking_hpc \
@@ -309,8 +308,8 @@ conda activate skillRL
 
 cd /GLOBALFS/hit_wxia_1/myl/SkillRL
 
-export ALFWORLD_DATA=/GLOBALFS/hit_wxia_1/myl/SkillRL/.cache/alfworld
-export MODEL_PATH=$HOME/.cache/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507
+export ALFWORLD_DATA=/GLOBALFS/hit_wxia_1/.cache/alfworld
+export MODEL_PATH=/GLOBALFS/hit_wxia_1/.cache/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507
 export DATA_ROOT=/GLOBALFS/hit_wxia_1/myl/SkillRL/skillrl_data/verl-agent
 export OUTPUT_ROOT=/GLOBALFS/hit_wxia_1/myl/SkillRL/skillrl_outputs
 export CUDA_VISIBLE_DEVICES=0
