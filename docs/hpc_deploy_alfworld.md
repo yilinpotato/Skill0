@@ -45,6 +45,7 @@ flash-attn 2.7.4.post1
 
 - CUDA 12.8
 - 单环境部署
+- A800 80GB 单卡默认配置
 - ALFWorld text-only 训练与评测
 
 如果超算节点不是 CUDA 12.8，不要直接照搬这两份文件，需要同步调整：
@@ -102,24 +103,20 @@ pip install -e .
 
 ### 5.1 下载官方 ALFWorld 资源
 
-首次部署需要执行：
+首次部署建议把 ALFWorld 数据放在项目目录下，避免依赖登录节点或容器的 `$HOME` cache：
 
 ```bash
-alfworld-download -f
+cd /GLOBALFS/hit_wxia_1/myl/SkillRL
+mkdir -p .cache/alfworld
+ALFWORLD_DATA=$PWD/.cache/alfworld alfworld-download -f
 ```
 
-默认会下载到：
+下载完成后需要确认以下目录存在：
 
 ```text
-~/.cache/alfworld/
-```
-
-需要重点确认以下目录存在：
-
-```text
-~/.cache/alfworld/json_2.1.1/
-~/.cache/alfworld/logic/
-~/.cache/alfworld/detectors/
+/GLOBALFS/hit_wxia_1/myl/SkillRL/.cache/alfworld/json_2.1.1/
+/GLOBALFS/hit_wxia_1/myl/SkillRL/.cache/alfworld/logic/
+/GLOBALFS/hit_wxia_1/myl/SkillRL/.cache/alfworld/detectors/
 ```
 
 ### 5.2 配置 ALFWorld 数据路径
@@ -130,43 +127,34 @@ alfworld-download -f
 $ALFWORLD_DATA
 ```
 
-因此超算上至少需要设置：
+超算默认配置为：
 
 ```bash
-export ALFWORLD_DATA=$HOME/.cache/alfworld
+export ALFWORLD_DATA=/GLOBALFS/hit_wxia_1/myl/SkillRL/.cache/alfworld
 ```
 
-如果数据放在共享盘，例如：
-
-```bash
-export ALFWORLD_DATA=/path/to/shared/alfworld
-```
-
-### 5.3 本仓库自带的 cache 修复脚本
-
-当前主训练脚本默认会调用：
-
-```bash
-bash scripts/setup_alfworld_cache.sh
-```
-
-这个脚本目前写死了本地机器路径：
+也可以不手动设置。当前训练脚本会默认使用：
 
 ```text
-/data2/myl/home_configs/.cache/alfworld
-/home/myl/.cache/alfworld
+$PROJECT_ROOT/.cache/alfworld
 ```
 
-因此在超算上有两种方案：
+### 5.3 本仓库自带的 cache 准备脚本
 
-1. 不使用这个脚本，手动保证 `ALFWORLD_DATA` 指向正确目录。
-2. 按超算目录结构修改 `scripts/setup_alfworld_cache.sh` 中的硬编码路径。
-
-如果超算路径与本机不同，建议直接注释掉训练脚本中的这一步，改为在作业脚本中手动设置：
+当前主训练脚本会执行：
 
 ```bash
-export ALFWORLD_DATA=/path/to/shared/alfworld
+source scripts/setup_alfworld_cache.sh
 ```
+
+该脚本现在只做项目内 cache 准备：
+
+```text
+PROJECT_CACHE_ROOT=${PROJECT_CACHE_ROOT:-$REPO_ROOT/.cache}
+ALFWORLD_DATA=${ALFWORLD_DATA:-$PROJECT_CACHE_ROOT/alfworld}
+```
+
+如果 `json_2.1.1` 或 `logic` 缺失，脚本会提示执行 `ALFWORLD_DATA=$PROJECT_ROOT/.cache/alfworld alfworld-download -f`。
 
 ## 6. 模型与输出目录
 
@@ -174,8 +162,9 @@ export ALFWORLD_DATA=/path/to/shared/alfworld
 
 ```bash
 export MODEL_PATH=$HOME/.cache/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507
-export DATA_ROOT=/GLOBALFS/hit_wxia_1/myl/skillrl_data/verl-agent
-export OUTPUT_ROOT=/GLOBALFS/hit_wxia_1/myl/skillrl_outputs
+export ALFWORLD_DATA=/GLOBALFS/hit_wxia_1/myl/SkillRL/.cache/alfworld
+export DATA_ROOT=/GLOBALFS/hit_wxia_1/myl/SkillRL/skillrl_data/verl-agent
+export OUTPUT_ROOT=/GLOBALFS/hit_wxia_1/myl/SkillRL/skillrl_outputs
 ```
 
 当前项目根目录建议使用：
@@ -245,8 +234,9 @@ bash examples/grpo_trainer/run_alfworld_smoke.sh
 ```bash
 CUDA_VISIBLE_DEVICES=0 \
 MODEL_PATH=$HOME/.cache/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507 \
-DATA_ROOT=/GLOBALFS/hit_wxia_1/myl/skillrl_data/verl-agent \
-OUTPUT_ROOT=/GLOBALFS/hit_wxia_1/myl/skillrl_outputs \
+ALFWORLD_DATA=/GLOBALFS/hit_wxia_1/myl/SkillRL/.cache/alfworld \
+DATA_ROOT=/GLOBALFS/hit_wxia_1/myl/SkillRL/skillrl_data/verl-agent \
+OUTPUT_ROOT=/GLOBALFS/hit_wxia_1/myl/SkillRL/skillrl_outputs \
 EXPERIMENT_NAME=alfworld_qwen3_4b_thinking_hpc \
 bash examples/grpo_trainer/run_alfworld_fixed_single_stage.sh
 ```
@@ -269,7 +259,17 @@ bash examples/grpo_trainer/run_alfworld_fixed_single_stage.sh
 
 ### 9.2 `ValueError: No available memory for the cache blocks`
 
-这是 vLLM KV cache 显存不足。优先调小：
+这是 vLLM KV cache 显存不足。A800 80GB 当前默认值为：
+
+```bash
+VLLM_GPU_MEMORY_UTILIZATION=0.70
+VLLM_MAX_NUM_BATCHED_TOKENS=8192
+VLLM_MAX_NUM_SEQS=8
+TRAIN_DATA_SIZE=16
+GROUP_SIZE=4
+```
+
+如果仍然 OOM，再按下面的保守参数回退：
 
 ```bash
 VLLM_GPU_MEMORY_UTILIZATION=0.30
@@ -294,10 +294,6 @@ export WANDB_GRAPHQL_TIMEOUT=120
 export TRAINER_LOGGER="['console']"
 ```
 
-### 9.4 `scripts/setup_alfworld_cache.sh` 路径不适配
-
-这是当前仓库里最需要注意的本地化脚本之一。超算上优先使用环境变量 `ALFWORLD_DATA`，不要直接依赖这个脚本里的硬编码路径。
-
 ## 10. 建议保留的最小作业脚本骨架
 
 ```bash
@@ -313,10 +309,10 @@ conda activate skillRL
 
 cd /GLOBALFS/hit_wxia_1/myl/SkillRL
 
-export ALFWORLD_DATA=/path/to/shared/alfworld
+export ALFWORLD_DATA=/GLOBALFS/hit_wxia_1/myl/SkillRL/.cache/alfworld
 export MODEL_PATH=$HOME/.cache/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507
-export DATA_ROOT=/GLOBALFS/hit_wxia_1/myl/skillrl_data/verl-agent
-export OUTPUT_ROOT=/GLOBALFS/hit_wxia_1/myl/skillrl_outputs
+export DATA_ROOT=/GLOBALFS/hit_wxia_1/myl/SkillRL/skillrl_data/verl-agent
+export OUTPUT_ROOT=/GLOBALFS/hit_wxia_1/myl/SkillRL/skillrl_outputs
 export CUDA_VISIBLE_DEVICES=0
 export WANDB_INIT_TIMEOUT=120
 export WANDB_GRAPHQL_TIMEOUT=120

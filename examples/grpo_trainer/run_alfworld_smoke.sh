@@ -16,7 +16,9 @@ conda activate skillRL
 set -u
 
 export MODEL_PATH="${MODEL_PATH:-$HOME/.cache/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507}"
-export OUTPUT_ROOT="${OUTPUT_ROOT:-$REPO_ROOT/../skillrl_outputs}"
+export ALFWORLD_DATA="${ALFWORLD_DATA:-$REPO_ROOT/.cache/alfworld}"
+export DATA_ROOT="${DATA_ROOT:-$REPO_ROOT/skillrl_data/verl-agent}"
+export OUTPUT_ROOT="${OUTPUT_ROOT:-$REPO_ROOT/skillrl_outputs}"
 export EXPERIMENT_NAME="${EXPERIMENT_NAME:-alfworld_smoke}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export WANDB_PROJECT="${WANDB_PROJECT:-skillrl_mvp}"

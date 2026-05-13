@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# 方案 B：单阶段训练（单 GPU 0 号卡轻量版）
-# 修复所有关键问题 + 降低训练消耗
+# ALFWorld GRPO single-stage training for A800 80GB.
 
 set -euo pipefail
 
@@ -14,9 +13,11 @@ if [[ "$TRACE_SH" == "1" ]]; then
 fi
 
 export VLLM_ATTENTION_BACKEND="${VLLM_ATTENTION_BACKEND:-FLASH_ATTN}"
-export MODEL_PATH="${MODEL_PATH:-~/.cache/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507}"
-export DATA_ROOT="${DATA_ROOT:-/GLOBALFS/hit_wxia_1/myl/skillrl_data/verl-agent}"
-export OUTPUT_ROOT="${OUTPUT_ROOT:-/GLOBALFS/hit_wxia_1/myl/skillrl_outputs}"
+export PROJECT_ROOT="${PROJECT_ROOT:-$REPO_ROOT}"
+export MODEL_PATH="${MODEL_PATH:-$HOME/.cache/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507}"
+export ALFWORLD_DATA="${ALFWORLD_DATA:-$PROJECT_ROOT/.cache/alfworld}"
+export DATA_ROOT="${DATA_ROOT:-$PROJECT_ROOT/skillrl_data/verl-agent}"
+export OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/skillrl_outputs}"
 export EXPERIMENT_NAME="${EXPERIMENT_NAME:-alfworld_qwen3_4b_thinking_v3}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export RAY_memory_usage_threshold="${RAY_memory_usage_threshold:-0.99}"
@@ -27,23 +28,21 @@ export PYTHONFAULTHANDLER="${PYTHONFAULTHANDLER:-1}"
 unset PYTORCH_CUDA_ALLOC_CONF
 
 # ============================================================================
-# 单 GPU 配置（默认使用物理 0 号卡）
+# A800 80GB single GPU configuration
 # ============================================================================
 
 n_gpus_per_node=1
 
 echo "============================================"
-echo "单阶段 RL 训练（单 GPU 0 号卡轻量版）"
+echo "ALFWorld GRPO training（A800 80GB single GPU）"
 echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
 echo "检测到 GPU 数量: $n_gpus_per_node"
 echo "============================================"
 echo ""
 
-# 修复 1：单卡安全 batch size
-# 单卡 3090 + 4B + vLLM/FSDP 共卡时，8x4 会启动 32 条 train rollout，
-# 需要更大吞吐时显式通过环境变量覆盖。
-export TRAIN_DATA_SIZE="${TRAIN_DATA_SIZE:-8}"    # 每步 8 个任务
-export GROUP_SIZE="${GROUP_SIZE:-4}"              # 每任务 4 条 rollout -> 每步 32 条
+# A800 80GB can run a larger rollout batch than the previous 24GB setup.
+export TRAIN_DATA_SIZE="${TRAIN_DATA_SIZE:-16}"    # 每步 16 个任务
+export GROUP_SIZE="${GROUP_SIZE:-4}"               # 每任务 4 条 rollout -> 每步 64 条
 
 # 修复 2：提高学习率 + warmup
 export ACTOR_LR="${ACTOR_LR:-1e-5}"
@@ -104,10 +103,10 @@ export MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-10000}"
 export MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-1024}"
 export VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-3200}"
 
-# ── 单卡保守显存参数 ──────────────────────────────────────────────────────────
-export VLLM_GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.40}"
-export VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-2048}"
-export VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-2}"
+# A800 80GB vLLM / FSDP colocated settings.
+export VLLM_GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.70}"
+export VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-8192}"
+export VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-8}"
 export PPO_MICRO_BATCH_SIZE_PER_GPU="${PPO_MICRO_BATCH_SIZE_PER_GPU:-1}"
 export LOG_PROB_MICRO_BATCH_PER_GPU="${LOG_PROB_MICRO_BATCH_PER_GPU:-1}"
 export OPTIMIZER_OFFLOAD="${OPTIMIZER_OFFLOAD:-True}"
@@ -117,7 +116,7 @@ export ENABLE_RESOURCE_MONITOR="${ENABLE_RESOURCE_MONITOR:-1}"
 
 
 # 数据准备
-bash scripts/setup_alfworld_cache.sh
+source scripts/setup_alfworld_cache.sh
 
 run_dir="$OUTPUT_ROOT/skillrl_mvp/$EXPERIMENT_NAME"
 mkdir -p "$run_dir"
@@ -194,7 +193,7 @@ ppo_args=(
     actor_rollout_ref.actor.fsdp_config.param_offload=False
     "actor_rollout_ref.actor.fsdp_config.optimizer_offload=$OPTIMIZER_OFFLOAD"
 
-    # Rollout 配置（双卡 tensor parallelism）
+    # Rollout 配置（A800 80GB single GPU）
     "actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=$LOG_PROB_MICRO_BATCH_PER_GPU"
     "actor_rollout_ref.rollout.tensor_model_parallel_size=$VLLM_TP_SIZE"
     actor_rollout_ref.rollout.name=vllm
@@ -283,6 +282,8 @@ ppo_args=(
 {
   echo "timestamp=$(date '+%Y-%m-%d %H:%M:%S')"
   echo "MODEL_PATH=$MODEL_PATH"
+  echo "PROJECT_ROOT=$PROJECT_ROOT"
+  echo "ALFWORLD_DATA=$ALFWORLD_DATA"
   echo "EXPERIMENT_NAME=$EXPERIMENT_NAME"
   echo "WANDB_PROJECT=$WANDB_PROJECT"
   echo "WANDB_NAME=$WANDB_NAME"
