@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual env / conda local files
+.venv/
+venv/
+.env
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Training outputs
+outputs/
+skillrl_outputs/
+wandb/
+logs/
+diagnostics/
+
+# Local data / temporary dirs seen in this workspace
+1031360/
+2953823/
+3637881/
+
+# Generated artifacts
+*.png
+*.csv
+*.jsonl
+
+# Keep documented env / requirements files tracked; do not ignore them.

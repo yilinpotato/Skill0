@@ -13,8 +13,49 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List
+from typing import List, Optional
 import re
+
+
+def _normalize_action(text: str) -> str:
+    text = text.strip().lower()
+    text = text.strip("`'\" \n\t")
+    text = re.sub(r"^\s*(action\s*:|next action\s*:)\s*", "", text)
+    text = re.sub(r"^\s*(i will|i should|let'?s|we should)\s+", "", text)
+    text = re.sub(r"^(now\s+)?(go|move|proceed)\s+to\s+", "go to ", text)
+    text = re.sub(r"\s+", " ", text)
+    text = text.strip(" .。")
+    return text
+
+
+def _extract_tagged_action(text: str) -> Optional[str]:
+    matches = re.findall(r"<action>\s*(.*?)\s*</action>", text, flags=re.IGNORECASE | re.DOTALL)
+    if not matches:
+        return None
+    # Use the last action block. Small models sometimes draft invalid earlier
+    # action blocks before finally emitting the intended command.
+    return matches[-1]
+
+
+def _match_admissible_action(candidate: str, action_pool: List[str]) -> Optional[str]:
+    pool = [a for a in action_pool if a != "help"]
+    normalized_to_original = {_normalize_action(a): a for a in pool}
+    normalized_candidate = _normalize_action(candidate)
+
+    if normalized_candidate in normalized_to_original:
+        return normalized_to_original[normalized_candidate]
+
+    # Recover common verbose generations, e.g. "I will go to drawer 1 now".
+    # Prefer the longest command to avoid matching "look" inside longer text.
+    for normalized_action, original_action in sorted(
+        normalized_to_original.items(), key=lambda item: len(item[0]), reverse=True
+    ):
+        pattern = r"(?<!\w)" + re.escape(normalized_action) + r"(?!\w)"
+        if re.search(pattern, normalized_candidate):
+            return original_action
+
+    return None
+
 
 def alfworld_projection(actions: List[str], action_pools: List[List[str]]):
     """
@@ -26,37 +67,30 @@ def alfworld_projection(actions: List[str], action_pools: List[List[str]]):
     valids = [0] * len(actions)
 
     for i in range(len(actions)):
-        original_str = actions[i]  # keep the original string
-        actions[i] = actions[i].lower()
+        original_str = actions[i]
+        lower_output = original_str.lower()
 
-        # Attempt to extract the substring within <action>...</action>
-        start_tag = "<action>"
-        end_tag = "</action>"
-        start_idx = actions[i].find(start_tag)
-        end_idx = actions[i].find(end_tag)
-        try:
-            if start_idx == -1 or end_idx == -1:
-                # If we can't find a valid <action>...</action> block, mark as invalid
-                actions[i] = actions[i][-30:]  # 0 is invalid action for Sokoban
-                continue
+        has_chinese = re.search(r'[\u4e00-\u9fff]', original_str) is not None
 
-            # Extract just the content between the tags
-            extracted_action = actions[i][start_idx + len(start_tag):end_idx].strip().lower()
-            
-            actions[i] = extracted_action
-            valids[i] = 1
+        candidate = _extract_tagged_action(original_str)
+        has_action_tag = candidate is not None
+        if candidate is None:
+            # Fallback for partially formatted outputs. This keeps rollouts
+            # moving while still marking the sample invalid for penalty.
+            candidate = original_str
 
-        except:
-            actions[i] = actions[i][-30:]
+        matched_action = _match_admissible_action(candidate, action_pools[i])
+        if matched_action is None:
+            matched_action = _match_admissible_action(original_str, action_pools[i])
 
-        # check <think>...</think>
-        think_start_idx = original_str.find("<think>")
-        think_end_idx = original_str.find("</think>")
-        if think_start_idx == -1 or think_end_idx == -1:
-            valids[i] = 0
-
-        # check if contains any Chinese characters
-        if re.search(r'[\u4e00-\u9fff]', original_str):
+        if matched_action is not None:
+            actions[i] = matched_action
+            # If we can reliably recover an admissible action, treat it as valid.
+            # Qwen thinking models may emit long reasoning and miss the final
+            # action tag even when the decoded command itself is correct.
+            valids[i] = int(not has_chinese)
+        else:
+            actions[i] = _normalize_action(candidate)[-80:]
             valids[i] = 0
 
     return actions, valids

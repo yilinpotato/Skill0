@@ -460,6 +460,9 @@ class RayPPOTrainer:
         self._validate_config()
         self._create_dataloader(train_dataset, val_dataset, collate_fn, train_sampler)
 
+    def _compact_console_output_enabled(self) -> bool:
+        return bool(self.config.trainer.get("compact_console_output", False))
+
     def _validate_config(self):
         config = self.config
         # number of GPUs total
@@ -686,7 +689,501 @@ class RayPPOTrainer:
         # Log to each configured logger
         self.validation_generations_logger.log(self.config.trainer.logger, samples, self.global_steps)
 
-    def _validate(self):
+    def _append_metrics_jsonl(self, metrics: Dict, step: int):
+        metrics_path = self.config.trainer.get("metrics_jsonl_path", None)
+        if not metrics_path:
+            return
+
+        metrics_path = os.path.expanduser(metrics_path)
+        os.makedirs(os.path.dirname(metrics_path), exist_ok=True)
+        serializable_metrics = {}
+        for key, value in metrics.items():
+            if isinstance(value, (np.floating, np.integer)):
+                serializable_metrics[key] = value.item()
+            elif isinstance(value, (int, float, str, bool)):
+                serializable_metrics[key] = value
+
+        with open(metrics_path, "a", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {"step": int(step), "metrics": serializable_metrics},
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+
+    def _sanitize_metrics_for_logging(self, metrics: Dict) -> Dict:
+        sanitized = {}
+        for key, value in metrics.items():
+            if isinstance(value, torch.Tensor):
+                if value.numel() == 1:
+                    sanitized[key] = value.detach().cpu().item()
+                continue
+            if isinstance(value, np.ndarray):
+                if value.size == 1:
+                    sanitized[key] = value.item()
+                continue
+            if isinstance(value, (np.floating, np.integer)):
+                sanitized[key] = value.item()
+            elif isinstance(value, (int, float, str, bool)):
+                sanitized[key] = value
+        return sanitized
+
+    def _set_env_global_skill_top_k(self, envs, top_k):
+        memory = getattr(envs, "retrieval_memory", None)
+        if memory is not None and hasattr(memory, "set_global_skill_top_k"):
+            memory.set_global_skill_top_k(top_k)
+
+    def _get_env_global_skill_top_k(self, envs):
+        memory = getattr(envs, "retrieval_memory", None)
+        if memory is not None and hasattr(memory, "get_global_skill_top_k"):
+            return memory.get_global_skill_top_k()
+        return None
+
+    def _get_env_global_skill_ids(self, envs):
+        memory = getattr(envs, "retrieval_memory", None)
+        if memory is not None and hasattr(memory, "get_all_global_skill_ids"):
+            return memory.get_all_global_skill_ids()
+        return []
+
+    def _set_env_global_skill_active_ids(self, envs, skill_ids):
+        memory = getattr(envs, "retrieval_memory", None)
+        if memory is not None and hasattr(memory, "set_global_skill_active_ids"):
+            memory.set_global_skill_active_ids(skill_ids)
+
+    def _get_env_global_skill_active_ids(self, envs):
+        memory = getattr(envs, "retrieval_memory", None)
+        if memory is not None and hasattr(memory, "get_global_skill_active_ids"):
+            return memory.get_global_skill_active_ids()
+        return None
+
+    def _remove_env_global_skill_ids(self, envs, skill_ids):
+        memory = getattr(envs, "retrieval_memory", None)
+        if memory is not None and hasattr(memory, "remove_global_skill_ids"):
+            return memory.remove_global_skill_ids(skill_ids)
+        return []
+
+    def _get_task_specific_eval_task_type(self):
+        return self.config.env.get("alfworld", {}).get("eval_task_type", None)
+
+    def _get_env_task_specific_skill_ids(self, envs, task_type):
+        memory = getattr(envs, "retrieval_memory", None)
+        if memory is not None and hasattr(memory, "get_all_task_specific_skill_ids"):
+            return memory.get_all_task_specific_skill_ids(task_type)
+        return []
+
+    def _set_env_task_specific_skill_active_ids(self, envs, task_type, skill_ids):
+        memory = getattr(envs, "retrieval_memory", None)
+        if memory is not None and hasattr(memory, "set_task_specific_skill_active_ids"):
+            memory.set_task_specific_skill_active_ids(task_type, skill_ids)
+
+    def _get_env_task_specific_skill_active_ids(self, envs, task_type):
+        memory = getattr(envs, "retrieval_memory", None)
+        if memory is not None and hasattr(memory, "get_task_specific_skill_active_ids"):
+            return memory.get_task_specific_skill_active_ids(task_type)
+        return None
+
+    def _skillzero_include_task_specific(self) -> bool:
+        skills_cfg = self.config.env.get("skills_only_memory", {})
+        return bool(skills_cfg.get("skillzero_include_task_specific", True))
+
+    def _get_current_task_specific_skill_ids(self, envs, task_type):
+        if not task_type:
+            return []
+        memory = getattr(envs, "retrieval_memory", None)
+        if memory is None or not hasattr(memory, "get_all_task_specific_skill_ids"):
+            return []
+
+        all_ids = memory.get_all_task_specific_skill_ids(task_type)
+        active_ids = self._get_env_task_specific_skill_active_ids(envs, task_type)
+        if active_ids is None:
+            return list(all_ids)
+        active_set = set(active_ids)
+        return [sid for sid in all_ids if sid in active_set]
+
+    def _get_skillzero_all_skills_off_validate_kwargs(self):
+        kwargs = {
+            "global_skill_top_k_override": 0,
+            "global_skill_active_ids_override": [],
+        }
+        if not self._skillzero_include_task_specific():
+            return kwargs
+
+        task_type = self._get_task_specific_eval_task_type()
+        if not task_type:
+            return kwargs
+
+        current_task_ids = self._get_current_task_specific_skill_ids(self.val_envs, task_type)
+        if current_task_ids:
+            kwargs["task_specific_task_type_override"] = task_type
+            kwargs["task_specific_skill_active_ids_override"] = []
+        return kwargs
+
+    def _get_global_internalization_mode(self):
+        skills_cfg = self.config.env.get("skills_only_memory", {})
+        return skills_cfg.get("global_internalization_mode", "schedule")
+
+    def _ensure_learned_global_skill_state(self):
+        if not self.config.env.get("use_skills_only_memory", False):
+            return None
+        if self._get_global_internalization_mode() != "learned":
+            return None
+
+        active_ids = self._get_env_global_skill_active_ids(self.envs)
+        if active_ids is None:
+            skills_cfg = self.config.env.get("skills_only_memory", {})
+            all_ids = self._get_env_global_skill_ids(self.envs)
+            initial_top_k = skills_cfg.get("global_skill_top_k", None)
+            if initial_top_k is None:
+                initial_top_k = skills_cfg.get("top_k", None)
+            if initial_top_k is not None:
+                all_ids = all_ids[:max(0, int(initial_top_k))]
+            active_ids = list(all_ids)
+            self._set_env_global_skill_active_ids(self.envs, active_ids)
+            self._set_env_global_skill_active_ids(self.val_envs, active_ids)
+
+        self._set_env_global_skill_top_k(self.envs, len(active_ids))
+        self._set_env_global_skill_top_k(self.val_envs, len(active_ids))
+        return active_ids
+
+    def _get_scheduled_global_skill_top_k(self):
+        skills_cfg = self.config.env.get("skills_only_memory", {})
+        schedule = skills_cfg.get("global_top_k_schedule", None)
+        if not schedule:
+            return skills_cfg.get("global_skill_top_k", None)
+
+        schedule = list(schedule)
+        if not schedule:
+            return None
+        if len(schedule) == 1:
+            return schedule[0]
+
+        phase_len = max(1, int(np.ceil(self.total_training_steps / len(schedule))))
+        phase_idx = min((max(self.global_steps, 1) - 1) // phase_len, len(schedule) - 1)
+        return schedule[int(phase_idx)]
+
+    def _get_external_global_skill_top_k(self):
+        skills_cfg = self.config.env.get("skills_only_memory", {})
+        schedule = skills_cfg.get("global_top_k_schedule", None)
+        if schedule:
+            return max(int(v) for v in list(schedule))
+        top_k = skills_cfg.get("global_skill_top_k", None)
+        if top_k is not None:
+            return top_k
+        return skills_cfg.get("top_k", None)
+
+    def _sync_global_skill_schedule(self):
+        if not self.config.env.get("use_skills_only_memory", False):
+            return None
+
+        mode = self._get_global_internalization_mode()
+        if mode == "learned":
+            active_ids = self._ensure_learned_global_skill_state() or []
+            print(
+                f"[SkillInternalization] step={self.global_steps} "
+                f"mode=learned active_global_skills={len(active_ids)} ids={active_ids}"
+            )
+            return len(active_ids)
+
+        top_k = self._get_scheduled_global_skill_top_k()
+        self._set_env_global_skill_top_k(self.envs, top_k)
+        self._set_env_global_skill_top_k(self.val_envs, top_k)
+        print(f"[SkillInternalization] step={self.global_steps} mode={mode} global_skill_top_k={top_k}")
+        return top_k
+
+    def _select_global_internalization_metric(self, val_metrics):
+        skills_cfg = self.config.env.get("skills_only_memory", {})
+        configured_metric = skills_cfg.get("global_internalization_metric", None)
+        if configured_metric:
+            return configured_metric, val_metrics.get(configured_metric, None)
+
+        eval_task_type = self.config.env.get("alfworld", {}).get("eval_task_type", None)
+        prefixes = sorted(
+            {key.rsplit("/", 1)[0] for key in val_metrics if key.endswith("/success_rate")},
+            key=len,
+            reverse=True,
+        )
+        primary_prefix = prefixes[0] if prefixes else "val"
+        candidates = []
+        if eval_task_type:
+            candidates.append(f"{primary_prefix}/{eval_task_type}_success_rate")
+        candidates.append(f"{primary_prefix}/success_rate")
+        candidates.extend(
+            sorted(
+                key for key in val_metrics
+                if key.endswith("success_rate")
+                and "external_global" not in key
+                and "internalized_global_off" not in key
+                and "internalized_skills_off" not in key
+                and "skillzero/skills_off" not in key
+            )
+        )
+
+        seen = set()
+        for key in candidates:
+            if key in seen:
+                continue
+            seen.add(key)
+            if key in val_metrics:
+                return key, val_metrics[key]
+        return None, None
+
+    def _maybe_add_skillzero_global_off_metrics(self, val_metrics):
+        """Mirror SkillZero's with-skill vs without-skill validation delta."""
+        if not self.config.env.get("use_skills_only_memory", False):
+            return val_metrics
+        if self._get_global_internalization_mode() != "skillzero":
+            return val_metrics
+
+        off_metrics = self._validate(
+            metric_prefix="val/skillzero/skills_off",
+            **self._get_skillzero_all_skills_off_validate_kwargs(),
+        )
+
+        for key, with_value in list(val_metrics.items()):
+            if not key.startswith("val/") or not key.endswith("success_rate"):
+                continue
+            suffix = key[len("val/"):]
+            off_key = f"val/skillzero/skills_off/{suffix}"
+            if off_key not in off_metrics:
+                continue
+            without_value = off_metrics[off_key]
+            val_metrics[f"val/skillzero/skills_on/{suffix}"] = with_value
+            val_metrics[f"val/skillzero/delta/{suffix}"] = float(with_value) - float(without_value)
+
+        val_metrics.update(off_metrics)
+        return val_metrics
+
+    def _maybe_internalize_global_skills(self, val_metrics):
+        if not self.config.env.get("use_skills_only_memory", False):
+            return
+        if self._get_global_internalization_mode() != "learned":
+            return
+
+        active_ids = self._ensure_learned_global_skill_state() or []
+        if not active_ids:
+            return
+
+        skills_cfg = self.config.env.get("skills_only_memory", {})
+        metric_key, metric_value = self._select_global_internalization_metric(val_metrics)
+        if metric_value is None:
+            print("[SkillInternalization] learned mode skipped: no validation success metric found")
+            return
+
+        threshold = float(skills_cfg.get("global_internalization_success_threshold", 0.8))
+        patience = max(1, int(skills_cfg.get("global_internalization_patience", 1)))
+        remove_per_event = max(1, int(skills_cfg.get("global_internalization_remove_per_event", 1)))
+        remove_order = skills_cfg.get("global_internalization_remove_order", "first")
+
+        if float(metric_value) >= threshold:
+            self._global_internalization_streak = getattr(self, "_global_internalization_streak", 0) + 1
+        else:
+            self._global_internalization_streak = 0
+
+        print(
+            f"[SkillInternalization] learned check step={self.global_steps} "
+            f"{metric_key}={float(metric_value):.3f} threshold={threshold:.3f} "
+            f"streak={self._global_internalization_streak}/{patience} active={len(active_ids)}"
+        )
+
+        if self._global_internalization_streak < patience:
+            return
+
+        if remove_order == "last":
+            removed_ids = active_ids[-remove_per_event:]
+        else:
+            removed_ids = active_ids[:remove_per_event]
+
+        new_active_ids = [sid for sid in active_ids if sid not in set(removed_ids)]
+        self._set_env_global_skill_active_ids(self.envs, new_active_ids)
+        self._set_env_global_skill_active_ids(self.val_envs, new_active_ids)
+        self._set_env_global_skill_top_k(self.envs, len(new_active_ids))
+        self._set_env_global_skill_top_k(self.val_envs, len(new_active_ids))
+        self._global_internalization_streak = 0
+        print(
+            f"[SkillInternalization] internalized/remove global skills at step={self.global_steps}: "
+            f"removed={removed_ids}, remaining={len(new_active_ids)}"
+        )
+
+    def _get_onpolicy_helpfulness_cfg(self):
+        return self.config.env.get("skills_only_memory", {})
+
+    def _onpolicy_helpfulness_enabled(self) -> bool:
+        cfg = self._get_onpolicy_helpfulness_cfg()
+        return bool(
+            self.config.env.get("use_skills_only_memory", False)
+            and cfg.get("onpolicy_helpfulness_eval_enabled", False)
+        )
+
+    def _get_current_global_skill_ids(self, envs):
+        memory = getattr(envs, "retrieval_memory", None)
+        if memory is None or not hasattr(memory, "get_all_global_skill_ids"):
+            return []
+
+        active_ids = self._get_env_global_skill_active_ids(envs)
+        if active_ids is not None:
+            return list(active_ids)
+
+        all_ids = memory.get_all_global_skill_ids()
+        top_k = self._get_env_global_skill_top_k(envs)
+        if top_k is None:
+            top_k = self.config.env.get("skills_only_memory", {}).get("top_k", None)
+        if top_k is None:
+            return list(all_ids)
+        return list(all_ids[: max(0, int(top_k))])
+
+    def _get_global_skill_metadata(self, envs):
+        memory = getattr(envs, "retrieval_memory", None)
+        if memory is None:
+            return {}
+        skills = getattr(memory, "skills", {}) or {}
+        metadata = {}
+        for idx, skill in enumerate(skills.get("general_skills", [])):
+            skill_id = skill.get("skill_id") or f"__global_idx_{idx}"
+            metadata[skill_id] = skill
+        return metadata
+
+    def _metric_with_prefix_variant(self, metric_key, metric_prefix):
+        if metric_key is None:
+            return None
+        if "/" not in metric_key:
+            return metric_key
+        return f"{metric_prefix}/{metric_key.split('/', 1)[1]}"
+
+    def _select_helpfulness_candidate_ids(self, active_ids):
+        return list(active_ids)
+
+    def _maybe_run_onpolicy_helpfulness_eval(self, val_metrics):
+        if not self._onpolicy_helpfulness_enabled():
+            return val_metrics
+
+        active_ids = self._get_current_global_skill_ids(self.val_envs)
+        if not active_ids:
+            return val_metrics
+
+        metric_key, base_metric_value = self._select_global_internalization_metric(val_metrics)
+        if metric_key is None or base_metric_value is None:
+            print("[HelpfulnessEval] skipped: no validation success metric found")
+            return val_metrics
+
+        cfg = self._get_onpolicy_helpfulness_cfg()
+        candidate_ids = self._select_helpfulness_candidate_ids(active_ids)
+        skill_meta = self._get_global_skill_metadata(self.val_envs)
+        delta_threshold = float(cfg.get("onpolicy_helpfulness_eval_delta_threshold", 0.0))
+        patience = max(1, int(cfg.get("onpolicy_helpfulness_eval_patience", 1)))
+        auto_internalize = bool(cfg.get("onpolicy_helpfulness_eval_auto_internalize", False))
+        min_active = max(0, int(cfg.get("onpolicy_helpfulness_eval_min_active_skills", 0)))
+        remove_cap = max(1, int(cfg.get("onpolicy_helpfulness_eval_remove_per_round", 1)))
+
+        streaks = getattr(self, "_helpfulness_skill_streaks", defaultdict(int))
+        removable = []
+
+        print(
+            f"[HelpfulnessEval] step={self.global_steps} base_metric={metric_key}={float(base_metric_value):.3f} "
+            f"evaluating all {len(candidate_ids)} active global skills"
+        )
+
+        for skill_id in candidate_ids:
+            override_ids = [sid for sid in active_ids if sid != skill_id]
+            off_prefix = f"val/helpfulness/without/{skill_id}"
+            off_metrics = self._validate(
+                metric_prefix=off_prefix,
+                global_skill_active_ids_override=override_ids,
+            )
+            val_metrics.update(off_metrics)
+
+            off_key = self._metric_with_prefix_variant(metric_key, off_prefix)
+            off_value = off_metrics.get(off_key, None)
+            if off_value is None:
+                continue
+
+            delta = float(base_metric_value) - float(off_value)
+            title = skill_meta.get(skill_id, {}).get("title", skill_id)
+            metric_prefix = f"val/helpfulness/{skill_id}"
+            val_metrics[f"{metric_prefix}/with_skill"] = float(base_metric_value)
+            val_metrics[f"{metric_prefix}/without_skill"] = float(off_value)
+            val_metrics[f"{metric_prefix}/delta"] = delta
+
+            if delta <= delta_threshold:
+                streaks[skill_id] += 1
+            else:
+                streaks[skill_id] = 0
+            val_metrics[f"{metric_prefix}/streak"] = float(streaks[skill_id])
+
+            print(
+                f"[HelpfulnessEval] skill_id={skill_id} title={title!r} "
+                f"without={float(off_value):.3f} delta={delta:.3f} "
+                f"streak={streaks[skill_id]}/{patience}"
+            )
+
+            if auto_internalize and streaks[skill_id] >= patience:
+                removable.append((skill_id, delta))
+
+        self._helpfulness_skill_streaks = streaks
+
+        if not auto_internalize or not removable:
+            return val_metrics
+
+        removable.sort(key=lambda item: item[1])
+        removable_ids = [sid for sid, _ in removable if sid in active_ids]
+        if len(active_ids) - len(removable_ids) < min_active:
+            removable_ids = removable_ids[: max(0, len(active_ids) - min_active)]
+        removable_ids = removable_ids[:remove_cap]
+        if not removable_ids:
+            return val_metrics
+
+        new_active_ids = [sid for sid in active_ids if sid not in set(removable_ids)]
+        self._set_env_global_skill_active_ids(self.envs, new_active_ids)
+        self._set_env_global_skill_active_ids(self.val_envs, new_active_ids)
+        self._set_env_global_skill_top_k(self.envs, len(new_active_ids))
+        self._set_env_global_skill_top_k(self.val_envs, len(new_active_ids))
+
+        for sid in removable_ids:
+            streaks[sid] = 0
+
+        print(
+            f"[HelpfulnessEval] internalized/remove global skills at step={self.global_steps}: "
+            f"removed={removable_ids}, remaining={len(new_active_ids)}"
+        )
+        val_metrics["val/helpfulness/removed_count"] = float(len(removable_ids))
+        val_metrics["val/helpfulness/active_count_after"] = float(len(new_active_ids))
+        return val_metrics
+
+    def _validate(
+        self,
+        metric_prefix: str = "val",
+        global_skill_top_k_override=None,
+        global_skill_active_ids_override=None,
+        task_specific_task_type_override=None,
+        task_specific_skill_active_ids_override=None,
+    ):
+        old_val_global_top_k = None
+        old_val_global_active_ids = None
+        old_val_task_skill_ids = None
+        task_type_for_override = task_specific_task_type_override
+        if global_skill_top_k_override is not None or global_skill_active_ids_override is not None:
+            old_val_global_top_k = self._get_env_global_skill_top_k(self.val_envs)
+            old_val_global_active_ids = self._get_env_global_skill_active_ids(self.val_envs)
+            if global_skill_active_ids_override is not None:
+                self._set_env_global_skill_active_ids(self.val_envs, global_skill_active_ids_override)
+            else:
+                all_global_ids = self._get_env_global_skill_ids(self.val_envs)
+                self._set_env_global_skill_active_ids(
+                    self.val_envs,
+                    all_global_ids[:max(0, int(global_skill_top_k_override))],
+                )
+            if global_skill_top_k_override is not None:
+                self._set_env_global_skill_top_k(self.val_envs, global_skill_top_k_override)
+            elif global_skill_active_ids_override is not None:
+                self._set_env_global_skill_top_k(self.val_envs, len(global_skill_active_ids_override))
+        if task_type_for_override is not None and task_specific_skill_active_ids_override is not None:
+            old_val_task_skill_ids = self._get_env_task_specific_skill_active_ids(self.val_envs, task_type_for_override)
+            self._set_env_task_specific_skill_active_ids(
+                self.val_envs,
+                task_type_for_override,
+                task_specific_skill_active_ids_override,
+            )
+
         reward_tensor_lst = []
         data_source_lst = []
         tool_calling_list = []
@@ -735,8 +1232,10 @@ class RayPPOTrainer:
                 "recompute_log_prob": False,
                 "do_sample": self.config.actor_rollout_ref.rollout.val_kwargs.do_sample,
                 "validate": True,
+                "global_step": self.global_steps,
             }
-            print(f"test_gen_batch meta info: {test_gen_batch.meta_info}")
+            if not self._compact_console_output_enabled():
+                print(f"test_gen_batch meta info: {test_gen_batch.meta_info}")
 
             # # pad to be divisible by dp_size
             # test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
@@ -752,7 +1251,8 @@ class RayPPOTrainer:
                                                     envs=self.val_envs,
                                                     is_train=False,
                                                     )
-            print('validation generation end')
+            if not self._compact_console_output_enabled():
+                print('validation generation end')
             del test_batch
             test_batch = test_output_gen_batch
             # Store generated outputs
@@ -813,24 +1313,47 @@ class RayPPOTrainer:
 
         metric_dict = {}
         for data_source, rewards in data_source_reward.items():
-            metric_dict[f'val/{data_source}/test_score'] = np.mean(rewards)
+            metric_dict[f'{metric_prefix}/{data_source}/test_score'] = np.mean(rewards)
 
         for data_source, tool_calls in data_source_tool_calling.items():
-            metric_dict[f'val/{data_source}/tool_call_count/mean'] = np.mean(tool_calls)
-            # metric_dict[f'val/{data_source}/tool_call_count/max'] = np.max(tool_calls)
-            # metric_dict[f'val/{data_source}/tool_call_count/min'] = np.min(tool_calls)
+            metric_dict[f'{metric_prefix}/{data_source}/tool_call_count/mean'] = np.mean(tool_calls)
+            # metric_dict[f'{metric_prefix}/{data_source}/tool_call_count/max'] = np.max(tool_calls)
+            # metric_dict[f'{metric_prefix}/{data_source}/tool_call_count/min'] = np.min(tool_calls)
 
         for k, v in success_rate.items():
-            metric_dict[f'val/{k}'] = v
+            metric_dict[f'{metric_prefix}/{k}'] = v
+
+        active_global_top_k = self._get_env_global_skill_top_k(self.val_envs)
+        if active_global_top_k is not None:
+            metric_dict[f'{metric_prefix}/global_skill_top_k'] = active_global_top_k
+        active_global_ids = self._get_env_global_skill_active_ids(self.val_envs)
+        if active_global_ids is not None:
+            metric_dict[f'{metric_prefix}/global_skill_active_count'] = len(active_global_ids)
+        task_eval_type = task_type_for_override or self._get_task_specific_eval_task_type()
+        if task_eval_type is not None:
+            active_task_ids = self._get_env_task_specific_skill_active_ids(self.val_envs, task_eval_type)
+            if active_task_ids is not None:
+                metric_dict[f'{metric_prefix}/task_specific_skill_active_count'] = len(active_task_ids)
 
         # === Skill Bank 动态更新 ===
-        if self.config.env.get('skills_only_memory', {}).get('enable_dynamic_update', False):
+        if (
+            metric_prefix == "val"
+            and global_skill_top_k_override is None
+            and global_skill_active_ids_override is None
+            and self.config.env.get('skills_only_memory', {}).get('enable_dynamic_update', False)
+        ):
             self._update_skills_from_validation(
                 sample_inputs=sample_inputs,
                 sample_outputs=sample_outputs,
                 sample_scores=sample_scores,
                 success_rate=success_rate,
             )
+
+        if global_skill_top_k_override is not None or global_skill_active_ids_override is not None:
+            self._set_env_global_skill_top_k(self.val_envs, old_val_global_top_k)
+            self._set_env_global_skill_active_ids(self.val_envs, old_val_global_active_ids)
+        if task_type_for_override is not None and task_specific_skill_active_ids_override is not None:
+            self._set_env_task_specific_skill_active_ids(self.val_envs, task_type_for_override, old_val_task_skill_ids)
 
         return metric_dict
 
@@ -1186,6 +1709,10 @@ class RayPPOTrainer:
 
         # load dataloader,
         # TODO: from remote not implemented yet
+        if not self.config.trainer.get("resume_dataloader_state", True):
+            print("Skipping dataloader state restore because trainer.resume_dataloader_state=False")
+            return
+
         dataloader_local_path = os.path.join(global_step_folder, "data.pt")
         if os.path.exists(dataloader_local_path):
             dataloader_state_dict = torch.load(dataloader_local_path, weights_only=False)
@@ -1228,6 +1755,7 @@ class RayPPOTrainer:
 
         # load checkpoint before doing anything
         self._load_checkpoint()
+        self._sync_global_skill_schedule()
 
         # perform validation before training
         # currently, we only support validation using the reward_function.
@@ -1251,6 +1779,7 @@ class RayPPOTrainer:
                 metrics = {}
                 timing_raw = {}
                 batch: DataProto = DataProto.from_single_dict(batch_dict)
+                self._sync_global_skill_schedule()
 
                 # pop those keys for generation
                 batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
@@ -1267,6 +1796,7 @@ class RayPPOTrainer:
                     batch_keys=batch_keys_to_pop,
                     non_tensor_batch_keys=non_tensor_batch_keys_to_pop,
                 )
+                gen_batch.meta_info["global_step"] = self.global_steps
 
                 is_last_step = self.global_steps >= self.total_training_steps
 
@@ -1398,7 +1928,8 @@ class RayPPOTrainer:
                             reward_tensor, reward_extra_infos_dict = ray.get(future_reward)
                         batch.batch["token_level_scores"] = reward_tensor
 
-                        print(f"{list(reward_extra_infos_dict.keys())=}")
+                        if self.config.trainer.get("debug_reward_extra_infos", False):
+                            print(f"{list(reward_extra_infos_dict.keys())=}")
                         if reward_extra_infos_dict:
                             batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
 
@@ -1473,6 +2004,28 @@ class RayPPOTrainer:
                     if self.val_reward_fn is not None and self.config.trainer.test_freq > 0 and (is_last_step or self.global_steps % self.config.trainer.test_freq == 0):
                         with _timer("testing", timing_raw):
                             val_metrics: dict = self._validate()
+                            val_metrics = self._maybe_add_skillzero_global_off_metrics(val_metrics)
+                            self._maybe_internalize_global_skills(val_metrics)
+                            val_metrics = self._maybe_run_onpolicy_helpfulness_eval(val_metrics)
+                            if (
+                                is_last_step
+                                and self.config.env.get("skills_only_memory", {}).get("eval_internalization_modes", False)
+                            ):
+                                external_top_k = self._get_external_global_skill_top_k()
+                                if external_top_k is not None:
+                                    val_metrics.update(
+                                        self._validate(
+                                            metric_prefix="val/external_global",
+                                            global_skill_top_k_override=external_top_k,
+                                        )
+                                    )
+                                internalized_off_kwargs = self._get_skillzero_all_skills_off_validate_kwargs()
+                                val_metrics.update(
+                                    self._validate(
+                                        metric_prefix="val/internalized_skills_off",
+                                        **internalized_off_kwargs,
+                                    )
+                                )
                             if is_last_step:
                                 last_val_metrics = val_metrics
                         metrics.update(val_metrics)
@@ -1496,7 +2049,9 @@ class RayPPOTrainer:
                 metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, n_gpus=n_gpus))
 
                 # TODO: make a canonical logger that supports various backend
+                metrics = self._sanitize_metrics_for_logging(metrics)
                 logger.log(data=metrics, step=self.global_steps)
+                self._append_metrics_jsonl(metrics, self.global_steps)
 
                 progress_bar.update(1)
                 self.global_steps += 1

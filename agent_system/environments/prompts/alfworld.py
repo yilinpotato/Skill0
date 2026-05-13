@@ -20,8 +20,12 @@ Your current observation is: {current_observation}
 Your admissible actions of the current situation are: [{admissible_actions}].
 
 Now it's your turn to take an action.
-You should first reason step-by-step about the current situation. This reasoning process MUST be enclosed within <think> </think> tags. 
-Once you've finished your reasoning, you should choose an admissible action for current step and present it within <action> </action> tags.
+Your assistant response may already begin inside an opened <think> block.
+Keep the reasoning very short, then close it with </think> immediately.
+Immediately after that, copy exactly one command from the admissible actions list and put only that command inside <action> </action> tags.
+The final response format must end as </think><action>exact admissible command</action>.
+Do not invent commands. Do not write explanations inside <action>. Do not output more than one action.
+If you already know the command, close </think> right away and output the action immediately.
 """
 
 ALFWORLD_TEMPLATE = """
@@ -31,8 +35,12 @@ You are now at step {current_step} and your current observation is: {current_obs
 Your admissible actions of the current situation are: [{admissible_actions}].
 
 Now it's your turn to take an action.
-You should first reason step-by-step about the current situation. This reasoning process MUST be enclosed within <think> </think> tags.
-Once you've finished your reasoning, you should choose an admissible action for current step and present it within <action> </action> tags.
+Your assistant response may already begin inside an opened <think> block.
+Keep the reasoning very short, then close it with </think> immediately.
+Immediately after that, copy exactly one command from the admissible actions list and put only that command inside <action> </action> tags.
+The final response format must end as </think><action>exact admissible command</action>.
+Do not invent commands. Do not write explanations inside <action>. Do not output more than one action.
+If you already know the command, close </think> right away and output the action immediately.
 """
 
 ALFWORLD_TEMPLATE_WITH_MEMORY = """
@@ -49,6 +57,10 @@ You are now at step {current_step} and your current observation is: {current_obs
 Your admissible actions of the current situation are: [{admissible_actions}].
 
 Now it's your turn to take an action.
-You should first reason step-by-step about the current situation. This reasoning process MUST be enclosed within <think> </think> tags.
-Once you've finished your reasoning, you should choose an admissible action for current step and present it within <action> </action> tags.
+Your assistant response may already begin inside an opened <think> block.
+Keep the reasoning very short, then close it with </think> immediately.
+Immediately after that, copy exactly one command from the admissible actions list and put only that command inside <action> </action> tags.
+The final response format must end as </think><action>exact admissible command</action>.
+Do not invent commands. Do not write explanations inside <action>. Do not output more than one action.
+If you already know the command, close </think> right away and output the action immediately.
 """

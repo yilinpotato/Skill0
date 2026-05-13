@@ -61,6 +61,9 @@ class SkillsOnlyMemory(BaseMemory):
         retrieval_mode: str = "template",
         embedding_model_path: Optional[str] = None,
         task_specific_top_k: Optional[int] = None,
+        global_skill_top_k: Optional[int] = None,
+        global_skill_active_ids: Optional[List[str]] = None,
+        task_specific_skill_active_ids: Optional[Dict[str, List[str]]] = None,
     ):
         """
         Args:
@@ -74,6 +77,19 @@ class SkillsOnlyMemory(BaseMemory):
                                   return.  ``None`` means *return all* in
                                   template mode and use ``top_k`` (general
                                   skills count) in embedding mode.
+            global_skill_top_k:   Optional override for the number of global
+                                  skills injected.  Used by skill
+                                  internalization curricula to fade global
+                                  skills out while leaving task-specific
+                                  skills visible.
+            global_skill_active_ids:
+                                  Optional explicit allow-list of global skill
+                                  IDs.  Learned internalization uses this to
+                                  remove learned global skills without touching
+                                  task-specific skills.
+            task_specific_skill_active_ids:
+                                  Optional explicit allow-list of task-specific
+                                  skill IDs per task type.
         """
         if retrieval_mode not in ("template", "embedding"):
             raise ValueError(
@@ -89,6 +105,13 @@ class SkillsOnlyMemory(BaseMemory):
         self.retrieval_mode = retrieval_mode
         self.embedding_model_path = embedding_model_path or "Qwen/Qwen3-Embedding-0.6B"
         self.task_specific_top_k = task_specific_top_k
+        self.global_skill_top_k = global_skill_top_k
+        self.global_skill_active_ids = list(global_skill_active_ids) if global_skill_active_ids is not None else None
+        self.task_specific_skill_active_ids = (
+            {task_type: list(skill_ids) for task_type, skill_ids in task_specific_skill_active_ids.items()}
+            if task_specific_skill_active_ids is not None
+            else {}
+        )
 
         # Lazy-initialised embedding state (only used in embedding mode)
         self._embedding_model = None
@@ -100,7 +123,7 @@ class SkillsOnlyMemory(BaseMemory):
         print(
             f"[SkillsOnlyMemory] Loaded skills: {n_general} general, "
             f"{n_task} task-specific, {n_mistakes} mistakes  "
-            f"| retrieval_mode={retrieval_mode}"
+            f"| retrieval_mode={retrieval_mode} | global_skill_top_k={global_skill_top_k}"
         )
 
         # In embedding mode, pre-compute skill embeddings eagerly so the first
@@ -298,6 +321,137 @@ class SkillsOnlyMemory(BaseMemory):
 
         return general_skills, task_skills
 
+    def set_global_skill_top_k(self, top_k: Optional[int]):
+        """Update the active global-skill budget used by retrieve()."""
+        if top_k is not None:
+            top_k = max(0, int(top_k))
+        if self.global_skill_top_k != top_k:
+            print(f"[SkillsOnlyMemory] global_skill_top_k: {self.global_skill_top_k} -> {top_k}")
+        self.global_skill_top_k = top_k
+
+    def get_global_skill_top_k(self) -> Optional[int]:
+        """Return the active global-skill budget override, if any."""
+        return self.global_skill_top_k
+
+    def _effective_global_top_k(self, top_k: int) -> int:
+        if self.global_skill_top_k is None:
+            return max(0, int(top_k))
+        return max(0, int(self.global_skill_top_k))
+
+    def get_all_global_skill_ids(self) -> List[str]:
+        """Return global/general skill IDs in file order."""
+        ids = []
+        for idx, skill in enumerate(self.skills.get('general_skills', [])):
+            ids.append(skill.get('skill_id') or f"__global_idx_{idx}")
+        return ids
+
+    def _task_specific_skill_id(self, task_type: str, idx: int, skill: Dict[str, Any]) -> str:
+        return skill.get('skill_id') or f"__task_{task_type}_{idx}"
+
+    def get_all_task_specific_skill_ids(self, task_type: str) -> List[str]:
+        """Return task-specific skill IDs for a task type in file order."""
+        ids = []
+        for idx, skill in enumerate(self.skills.get('task_specific_skills', {}).get(task_type, [])):
+            ids.append(self._task_specific_skill_id(task_type, idx, skill))
+        return ids
+
+    def set_global_skill_active_ids(self, skill_ids: Optional[List[str]]):
+        """Set the explicit active global skill allow-list."""
+        new_ids = list(skill_ids) if skill_ids is not None else None
+        if self.global_skill_active_ids != new_ids:
+            old_count = None if self.global_skill_active_ids is None else len(self.global_skill_active_ids)
+            new_count = None if new_ids is None else len(new_ids)
+            print(f"[SkillsOnlyMemory] global_skill_active_ids count: {old_count} -> {new_count}")
+        self.global_skill_active_ids = new_ids
+
+    def get_global_skill_active_ids(self) -> Optional[List[str]]:
+        """Return a copy of the explicit active global skill allow-list."""
+        if self.global_skill_active_ids is None:
+            return None
+        return list(self.global_skill_active_ids)
+
+    def set_task_specific_skill_active_ids(self, task_type: str, skill_ids: Optional[List[str]]):
+        """Set the explicit active task-specific skill allow-list for one task type."""
+        if skill_ids is None:
+            if task_type in self.task_specific_skill_active_ids:
+                old_count = len(self.task_specific_skill_active_ids[task_type])
+                print(f"[SkillsOnlyMemory] task_specific_skill_active_ids[{task_type}]: {old_count} -> None")
+                self.task_specific_skill_active_ids.pop(task_type, None)
+            return
+
+        new_ids = list(skill_ids)
+        old_ids = self.task_specific_skill_active_ids.get(task_type)
+        if old_ids != new_ids:
+            old_count = None if old_ids is None else len(old_ids)
+            new_count = len(new_ids)
+            print(f"[SkillsOnlyMemory] task_specific_skill_active_ids[{task_type}]: {old_count} -> {new_count}")
+        self.task_specific_skill_active_ids[task_type] = new_ids
+
+    def get_task_specific_skill_active_ids(self, task_type: str) -> Optional[List[str]]:
+        """Return a copy of the explicit active task-specific allow-list for one task type."""
+        skill_ids = self.task_specific_skill_active_ids.get(task_type)
+        if skill_ids is None:
+            return None
+        return list(skill_ids)
+
+    def remove_task_specific_skill_ids(self, task_type: str, skill_ids: List[str]) -> List[str]:
+        """Deactivate task-specific skills by ID for one task type."""
+        if not skill_ids:
+            return []
+        if task_type not in self.task_specific_skill_active_ids:
+            self.task_specific_skill_active_ids[task_type] = self.get_all_task_specific_skill_ids(task_type)
+
+        remove_set = set(skill_ids)
+        old_ids = list(self.task_specific_skill_active_ids.get(task_type, []))
+        self.task_specific_skill_active_ids[task_type] = [sid for sid in old_ids if sid not in remove_set]
+        removed = [sid for sid in old_ids if sid in remove_set]
+        if removed:
+            print(f"[SkillsOnlyMemory] Deactivated task-specific skills for {task_type}: {removed}")
+        return removed
+
+    def remove_global_skill_ids(self, skill_ids: List[str]) -> List[str]:
+        """Deactivate global skills by ID without deleting them from the skill bank."""
+        if not skill_ids:
+            return []
+        if self.global_skill_active_ids is None:
+            self.global_skill_active_ids = self.get_all_global_skill_ids()
+
+        remove_set = set(skill_ids)
+        old_ids = list(self.global_skill_active_ids)
+        self.global_skill_active_ids = [sid for sid in old_ids if sid not in remove_set]
+        removed = [sid for sid in old_ids if sid in remove_set]
+        if removed:
+            print(f"[SkillsOnlyMemory] Deactivated global skills: {removed}")
+        return removed
+
+    def _active_global_skill_set(self) -> Optional[set]:
+        if self.global_skill_active_ids is None:
+            return None
+        return set(self.global_skill_active_ids)
+
+    def _filter_active_global_skills(self, skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        active_ids = self._active_global_skill_set()
+        if active_ids is None:
+            return skills
+        filtered = []
+        for idx, skill in enumerate(skills):
+            skill_id = skill.get('skill_id') or f"__global_idx_{idx}"
+            if skill_id in active_ids:
+                filtered.append(skill)
+        return filtered
+
+    def _filter_active_task_specific_skills(self, task_type: str, skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        active_ids = self.task_specific_skill_active_ids.get(task_type)
+        if active_ids is None:
+            return skills
+        active_set = set(active_ids)
+        filtered = []
+        for idx, skill in enumerate(skills):
+            skill_id = self._task_specific_skill_id(task_type, idx, skill)
+            if skill_id in active_set:
+                filtered.append(skill)
+        return filtered
+
     # ------------------------------------------------------------------ #
     # Public interface                                                     #
     # ------------------------------------------------------------------ #
@@ -327,18 +481,23 @@ class SkillsOnlyMemory(BaseMemory):
               - ``task_specific_examples`` – always ``[]`` (reserved)
               - ``retrieval_mode``       – which mode was used
         """
-        common_mistakes = self.skills.get('common_mistakes', [])[:5]
+        effective_global_top_k = self._effective_global_top_k(top_k)
+        common_mistakes = self.skills.get('common_mistakes', [])[:5] if effective_global_top_k > 0 else []
 
         # ----------------------------------------------------------------
         # Embedding mode: semantic ranking of all skills
         # ----------------------------------------------------------------
         if self.retrieval_mode == "embedding":
             ts_top_k = self.task_specific_top_k if self.task_specific_top_k is not None else top_k
+            general_budget = effective_global_top_k
+            if self.global_skill_active_ids is not None:
+                general_budget = max(general_budget, len(self.global_skill_active_ids))
             general_skills, task_skills = self._embedding_retrieve(
                 task_description=task_description,
-                top_k_general=top_k,
+                top_k_general=general_budget,
                 top_k_task_specific=ts_top_k,
             )
+            general_skills = self._filter_active_global_skills(general_skills)[:effective_global_top_k]
             # Still detect task type for bookkeeping / formatting labels
             task_type = self._detect_task_type(task_description)
             return {
@@ -348,6 +507,7 @@ class SkillsOnlyMemory(BaseMemory):
                 'task_type': task_type,
                 'task_specific_examples': [],
                 'retrieval_mode': 'embedding',
+                'global_skill_top_k': effective_global_top_k,
             }
 
         # ----------------------------------------------------------------
@@ -362,15 +522,21 @@ class SkillsOnlyMemory(BaseMemory):
         all_general = self.skills.get('general_skills', [])
         dynamic_skills = [s for s in all_general if s.get('skill_id', '').startswith('dyn_')]
         static_skills = [s for s in all_general if not s.get('skill_id', '').startswith('dyn_')]
-        n_static = max(0, top_k - len(dynamic_skills))
-        general_skills = dynamic_skills + static_skills[:n_static]
+        if effective_global_top_k <= 0:
+            general_skills = []
+        elif self.global_skill_active_ids is not None:
+            general_skills = self._filter_active_global_skills(dynamic_skills + static_skills)[:effective_global_top_k]
+        else:
+            n_static = max(0, effective_global_top_k - len(dynamic_skills))
+            general_skills = (dynamic_skills + static_skills[:n_static])[:effective_global_top_k]
 
         all_task_skills = self.skills.get('task_specific_skills', {}).get(task_type, [])
 
+        filtered_task_skills = self._filter_active_task_specific_skills(task_type, all_task_skills)
         if self.task_specific_top_k is not None:
-            task_skills = all_task_skills[:self.task_specific_top_k]
+            task_skills = filtered_task_skills[:self.task_specific_top_k]
         else:
-            task_skills = all_task_skills  # original behaviour: return all
+            task_skills = filtered_task_skills  # original behaviour: return all
 
         return {
             'general_skills': general_skills,
@@ -379,6 +545,7 @@ class SkillsOnlyMemory(BaseMemory):
             'task_type': task_type,
             'task_specific_examples': [],
             'retrieval_mode': 'template',
+            'global_skill_top_k': effective_global_top_k,
         }
 
     def format_for_prompt(self, retrieved_memories: Dict[str, Any]) -> str:

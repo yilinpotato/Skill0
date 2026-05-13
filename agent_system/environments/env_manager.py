@@ -57,6 +57,8 @@ class SearchEnvironmentManager(EnvironmentManagerBase):
                 retrieval_mode=som_cfg.get('retrieval_mode', 'template'),
                 embedding_model_path=som_cfg.get('embedding_model_path', None),
                 task_specific_top_k=som_cfg.get('task_specific_top_k', None),
+                global_skill_top_k=som_cfg.get('global_skill_top_k', None),
+                global_skill_active_ids=som_cfg.get('global_skill_active_ids', None),
             )
             self.retrieved_memories = None
             print(f"[SearchEnvironmentManager] Skills-only memory enabled "
@@ -203,6 +205,8 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
                 retrieval_mode=som_cfg.get('retrieval_mode', 'template'),
                 embedding_model_path=som_cfg.get('embedding_model_path', None),
                 task_specific_top_k=som_cfg.get('task_specific_top_k', None),
+                global_skill_top_k=som_cfg.get('global_skill_top_k', None),
+                global_skill_active_ids=som_cfg.get('global_skill_active_ids', None),
             )
             self.retrieved_memories = None
             print(f"[AlfWorldEnvironmentManager] Skills-only memory enabled "
@@ -267,6 +271,8 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
         # add action_valid to infos
         for i, info in enumerate(infos):
             info['is_action_valid'] = to_numpy(valids[i])
+            info['raw_model_action'] = text_actions[i]
+            info['env_action'] = actions[i]
 
         next_observations = {'text': full_text_obs, 'image': image_obs, 'anchor': text_obs}
         rewards = to_numpy(rewards)
@@ -354,19 +360,8 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
                 return  # Exit after finding the first active mask
 
     def _process_gamefile(self, gamefile, won_value, success):
-        tasks = [
-            "pick_and_place",
-            "pick_two_obj_and_place",
-            "look_at_obj_in_light",
-            "pick_heat_then_place_in_recep",
-            "pick_cool_then_place_in_recep",
-            "pick_clean_then_place_in_recep",
-        ]
-
-        for task in tasks:
-            if task in gamefile:
-                success[f"{task}_success_rate"].append(won_value)
-                break
+        if "pick_and_place" in gamefile and "pick_two_obj_and_place" not in gamefile:
+            success["pick_and_place_success_rate"].append(won_value)
 
     def save_episode_trajectories(self, batch_data_list, infos_list):
         """
@@ -548,6 +543,8 @@ class WebshopEnvironmentManager(EnvironmentManagerBase):
                 retrieval_mode=som_cfg.get('retrieval_mode', 'template'),
                 embedding_model_path=som_cfg.get('embedding_model_path', None),
                 task_specific_top_k=som_cfg.get('task_specific_top_k', None),
+                global_skill_top_k=som_cfg.get('global_skill_top_k', None),
+                global_skill_active_ids=som_cfg.get('global_skill_active_ids', None),
             )
             self.retrieved_memories = None
             print(f"[WebshopEnvironmentManager] Skills-only memory enabled "
@@ -839,6 +836,9 @@ def make_envs(config):
 
         env_kwargs = {
             'eval_dataset': config.env.alfworld.eval_dataset, # 'eval_in_distribution' or 'eval_out_of_distribution'
+            'use_dense_reward': config.env.alfworld.get('use_dense_reward', False),
+            'train_task_type': config.env.alfworld.get('train_task_type', None),
+            'eval_task_type': config.env.alfworld.get('eval_task_type', None),
         }
         _envs = build_alfworld_envs(alf_config_path, config.env.seed, config.data.train_batch_size, group_n, is_train=True, env_kwargs=env_kwargs, resources_per_worker=resources_per_worker)
         _val_envs = build_alfworld_envs(alf_config_path, config.env.seed + 1000, config.data.val_batch_size, 1, is_train=False, env_kwargs=env_kwargs, resources_per_worker=resources_per_worker)

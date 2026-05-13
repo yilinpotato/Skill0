@@ -16,6 +16,7 @@ A unified tracking interface that supports logging data to different backend
 """
 
 import dataclasses
+import os
 from enum import Enum
 from functools import partial
 from pathlib import Path
@@ -51,12 +52,27 @@ class Tracking:
         if "tracking" in default_backend or "wandb" in default_backend:
             import wandb
 
-            wandb.init(project=project_name, name=experiment_name, config=config)
+            init_timeout = float(os.environ.get("WANDB_INIT_TIMEOUT", "90"))
+            graphql_timeout_raw = os.environ.get("WANDB_GRAPHQL_TIMEOUT", "")
+            graphql_timeout = float(graphql_timeout_raw) if graphql_timeout_raw else None
+            settings = wandb.Settings(
+                init_timeout=init_timeout,
+                login_timeout=init_timeout,
+                x_graphql_timeout_seconds=graphql_timeout,
+            )
+            wandb.init(
+                project=project_name,
+                name=experiment_name,
+                config=config,
+                dir=os.environ.get("WANDB_DIR", None),
+                group=os.environ.get("WANDB_RUN_GROUP", None),
+                settings=settings,
+            )
+            wandb.define_metric("training/global_step")
+            wandb.define_metric("*", step_metric="training/global_step")
             self.logger["wandb"] = wandb
 
         if "mlflow" in default_backend:
-            import os
-
             import mlflow
 
             MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", None)
@@ -71,8 +87,6 @@ class Tracking:
             self.logger["mlflow"] = _MlflowLoggingAdapter()
 
         if "swanlab" in default_backend:
-            import os
-
             import swanlab
 
             SWANLAB_API_KEY = os.environ.get("SWANLAB_API_KEY", None)
@@ -93,8 +107,6 @@ class Tracking:
             self.logger["swanlab"] = swanlab
 
         if "vemlp_wandb" in default_backend:
-            import os
-
             import volcengine_ml_platform
             from volcengine_ml_platform import wandb as vemlp_wandb
 

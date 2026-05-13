@@ -15,6 +15,9 @@
 
 import torch
 import numpy as np
+import json
+import os
+import re
 from verl import DataProto
 from verl.utils.dataset.rl_dataset import collate_fn
 from verl.utils.model import compute_position_id_with_mask
@@ -25,6 +28,15 @@ from agent_system.multi_turn_rollout.utils import process_image, to_list_of_dict
 from agent_system.environments import EnvironmentManagerBase
 from typing import List, Dict
 from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
+
+PICK_AND_PLACE_CORRECT_FORM = (
+    "Pick And Place correct action format: "
+    "<think>brief reason</think><action>exact admissible command</action>. "
+    "For a pick-and-place task, first find and take the target object, then go to "
+    "the target receptacle, put the object there, and issue <action>done</action> "
+    "only after the goal is satisfied."
+)
+
 
 class TrajectoryCollector:
     def __init__(self, config, tokenizer: PreTrainedTokenizer, processor=None):
@@ -39,6 +51,356 @@ class TrajectoryCollector:
         self.config = config
         self.tokenizer = tokenizer
         self.processor = processor
+
+    def _json_safe(self, value):
+        if isinstance(value, torch.Tensor):
+            if value.numel() == 1:
+                return value.detach().cpu().item()
+            return value.detach().cpu().tolist()
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return str(value)
+
+    def _trajectory_logging_enabled(self):
+        return bool(
+            self.config.trainer.get("trajectory_log_path", None)
+            or self.config.trainer.get("trajectory_log_dir", None)
+            or self.config.trainer.get("print_trajectories", False)
+        )
+
+    def _compact_console_output_enabled(self):
+        return bool(self.config.trainer.get("compact_console_output", False))
+
+    def _print_compact_rollout_summary(
+        self,
+        *,
+        gen_batch: DataProto,
+        episode_lengths: np.ndarray,
+        success: Dict[str, np.ndarray],
+        valid_action_ratios: np.ndarray,
+    ):
+        if not self._compact_console_output_enabled():
+            return
+        if gen_batch.meta_info.get("validate", False):
+            return
+
+        global_step = gen_batch.meta_info.get("global_step", "?")
+        total_steps = self.config.trainer.get("total_training_steps", "?")
+        success_values = np.asarray(
+            success.get("success_rate", np.zeros(len(episode_lengths), dtype=np.float32)),
+            dtype=np.float32,
+        )
+        batch_success_rate = float(success_values.mean()) if len(success_values) > 0 else 0.0
+
+        print(
+            f"[Train] progress={global_step}/{total_steps} "
+            f"batch_success_rate={batch_success_rate:.3f}",
+            flush=True,
+        )
+        for traj_idx, (steps, traj_success, valid_ratio) in enumerate(
+            zip(episode_lengths, success_values, valid_action_ratios)
+        ):
+            print(
+                f"[Train][traj {traj_idx}] "
+                f"steps={int(steps)} success={int(traj_success > 0)} "
+                f"valid_action_rate={float(valid_ratio):.3f}",
+                flush=True,
+            )
+
+    def _trajectory_log_path(self):
+        path = self.config.trainer.get("trajectory_log_path", None)
+        if path:
+            return path
+        log_dir = self.config.trainer.get("trajectory_log_dir", None)
+        if not log_dir:
+            return None
+        return os.path.join(log_dir, "trajectories.json")
+
+    def _context_log_path(self):
+        path = self.config.trainer.get("context_log_path", None)
+        if path:
+            return path
+        log_dir = self.config.trainer.get("trajectory_log_dir", None)
+        if not log_dir:
+            return None
+        return os.path.join(log_dir, "contexts.json")
+
+    def _wandb_trajectory_logging_enabled(self) -> bool:
+        logger_cfg = self.config.trainer.get("logger", [])
+        if isinstance(logger_cfg, str):
+            logger_cfg = [logger_cfg]
+        return bool(
+            self.config.trainer.get("wandb_log_trajectories", False)
+            and "wandb" in logger_cfg
+        )
+
+    def _wandb_context_logging_enabled(self) -> bool:
+        logger_cfg = self.config.trainer.get("logger", [])
+        if isinstance(logger_cfg, str):
+            logger_cfg = [logger_cfg]
+        return bool(
+            self.config.trainer.get("wandb_log_contexts", False)
+            and "wandb" in logger_cfg
+        )
+
+    def _truncate_text(self, value, max_chars: int) -> str:
+        text = "" if value is None else str(value)
+        if len(text) <= max_chars:
+            return text
+        return text[: max_chars - 3] + "..."
+
+    def _extract_think_action(self, text: str):
+        text = "" if text is None else str(text)
+        think_match = re.search(r"<think>\s*(.*?)\s*</think>", text, flags=re.IGNORECASE | re.DOTALL)
+        action_match = re.search(r"<action>\s*(.*?)\s*</action>", text, flags=re.IGNORECASE | re.DOTALL)
+        think_text = think_match.group(1).strip() if think_match else text.strip()
+        action_text = action_match.group(1).strip() if action_match else None
+        return think_text, action_text
+
+    def _log_trajectories_to_wandb(self, trajectories, *, validate: bool):
+        if not self._wandb_trajectory_logging_enabled():
+            return
+        if not trajectories:
+            return
+
+        try:
+            import wandb
+        except Exception as exc:
+            print(f"[TrajectoryCollector] Skip W&B trajectory logging: {exc}")
+            return
+
+        split = "val" if validate else "train"
+        max_traj = max(1, int(self.config.trainer.get("wandb_max_trajectories", 4)))
+        max_steps = max(1, int(self.config.trainer.get("wandb_max_trajectory_steps", 8)))
+        max_chars = max(64, int(self.config.trainer.get("wandb_max_text_chars", 400)))
+        max_summary_rows = max(1, int(self.config.trainer.get("wandb_max_summary_rows", 200)))
+        max_step_rows = max(1, int(self.config.trainer.get("wandb_max_step_rows", 1000)))
+
+        selected = trajectories[:max_traj]
+        summary_columns = [
+            "global_step",
+            "trajectory_index",
+            "task_type",
+            "task",
+            "episode_length",
+            "episode_reward",
+            "valid_action_rate",
+            "success_rate",
+            "last_observation",
+            "last_raw_response",
+            "last_think",
+            "last_action_text",
+            "last_model_output",
+            "last_env_action",
+            "trajectory_json",
+        ]
+        step_columns = [
+            "global_step",
+            "trajectory_index",
+            "task",
+            "step",
+            "active",
+            "observation",
+            "raw_response",
+            "think",
+            "action_text",
+            "model_output",
+            "env_action",
+            "is_action_valid",
+            "reward",
+            "done",
+            "won",
+            "goal_condition_success_rate",
+        ]
+        if any(any("prompt" in step for step in traj.get("steps", [])) for traj in selected):
+            step_columns.append("prompt")
+
+        summary_rows = []
+        step_rows = []
+        for traj in selected:
+            steps = traj.get("steps", [])
+            last_step = steps[-1] if steps else {}
+            summary_rows.append([
+                traj.get("global_step"),
+                traj.get("trajectory_index"),
+                traj.get("task_type"),
+                self._truncate_text(traj.get("task"), max_chars),
+                traj.get("episode_length"),
+                traj.get("episode_reward"),
+                traj.get("valid_action_rate"),
+                traj.get("success_rate"),
+                self._truncate_text(last_step.get("observation"), max_chars),
+                self._truncate_text(last_step.get("raw_response"), max_chars),
+                self._truncate_text(last_step.get("think"), max_chars),
+                self._truncate_text(last_step.get("action_text"), max_chars),
+                self._truncate_text(last_step.get("model_output"), max_chars),
+                self._truncate_text(last_step.get("env_action"), max_chars),
+                self._truncate_text(json.dumps(traj, ensure_ascii=False), max_chars * 2),
+            ])
+
+            for step in steps[:max_steps]:
+                row = [
+                    traj.get("global_step"),
+                    traj.get("trajectory_index"),
+                    self._truncate_text(traj.get("task"), max_chars),
+                    step.get("step"),
+                    step.get("active"),
+                    self._truncate_text(step.get("observation"), max_chars),
+                    self._truncate_text(step.get("raw_response"), max_chars),
+                    self._truncate_text(step.get("think"), max_chars),
+                    self._truncate_text(step.get("action_text"), max_chars),
+                    self._truncate_text(step.get("model_output"), max_chars),
+                    self._truncate_text(step.get("env_action"), max_chars),
+                    step.get("is_action_valid"),
+                    step.get("reward"),
+                    step.get("done"),
+                    step.get("won"),
+                    step.get("goal_condition_success_rate"),
+                ]
+                if "prompt" in step_columns:
+                    row.append(self._truncate_text(step.get("prompt"), max_chars))
+                step_rows.append(row)
+
+        summary_attr = f"_wandb_{split}_trajectory_summary_rows"
+        step_attr = f"_wandb_{split}_trajectory_step_rows"
+        existing_summary_rows = getattr(self, summary_attr, [])
+        existing_step_rows = getattr(self, step_attr, [])
+        existing_summary_rows.extend(summary_rows)
+        existing_step_rows.extend(step_rows)
+        existing_summary_rows = existing_summary_rows[-max_summary_rows:]
+        existing_step_rows = existing_step_rows[-max_step_rows:]
+        setattr(self, summary_attr, existing_summary_rows)
+        setattr(self, step_attr, existing_step_rows)
+
+        summary_table = wandb.Table(columns=summary_columns, data=existing_summary_rows)
+        step_table = wandb.Table(columns=step_columns, data=existing_step_rows)
+        global_step = selected[0].get("global_step", None)
+        wandb.log(
+            {
+                f"{split}/trajectory_summary": summary_table,
+                f"{split}/trajectory_steps": step_table,
+            },
+            step=global_step,
+        )
+
+    def _log_contexts_to_wandb(self, trajectories, *, validate: bool):
+        if not self._wandb_context_logging_enabled():
+            return
+        if not trajectories:
+            return
+
+        try:
+            import wandb
+        except Exception as exc:
+            print(f"[TrajectoryCollector] Skip W&B context logging: {exc}")
+            return
+
+        split = "val" if validate else "train"
+        max_contexts = max(1, int(self.config.trainer.get("wandb_context_samples_per_rollout", 5)))
+        max_chars = max(64, int(self.config.trainer.get("wandb_max_text_chars", 400)))
+
+        columns = [
+            "global_step",
+            "trajectory_index",
+            "task",
+            "context",
+            "first_observation",
+            "first_model_output",
+            "first_env_action",
+        ]
+        rows = []
+        for traj in trajectories[:max_contexts]:
+            steps = traj.get("steps", [])
+            first_step = steps[0] if steps else {}
+            rows.append([
+                traj.get("global_step"),
+                traj.get("trajectory_index"),
+                self._truncate_text(traj.get("task"), max_chars),
+                self._truncate_text(traj.get("prompt_text"), max_chars * 3),
+                self._truncate_text(first_step.get("observation"), max_chars),
+                self._truncate_text(first_step.get("model_output"), max_chars),
+                self._truncate_text(first_step.get("env_action"), max_chars),
+            ])
+
+        attr = f"_wandb_{split}_context_rows"
+        existing_rows = getattr(self, attr, [])
+        existing_rows.extend(rows)
+        existing_rows = existing_rows[-max_contexts:]
+        setattr(self, attr, existing_rows)
+
+        table = wandb.Table(columns=columns, data=existing_rows)
+        global_step = trajectories[0].get("global_step", None)
+        wandb.log({f"{split}/context_samples": table}, step=global_step)
+
+    def _dump_contexts(self, contexts):
+        if not contexts:
+            return
+
+        log_path = self._context_log_path()
+        if not log_path:
+            return
+
+        log_dir = os.path.dirname(log_path)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+
+        existing = []
+        if os.path.exists(log_path) and os.path.getsize(log_path) > 0:
+            with open(log_path, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+            if not isinstance(existing, list):
+                raise ValueError(f"Context log must contain a JSON list: {log_path}")
+
+        flattened = []
+        for c in contexts:
+            for step_ctx in c.get("contexts", []):
+                flattened.append(
+                    {
+                        "global_step": c.get("global_step"),
+                        "trajectory_index": c.get("trajectory_index"),
+                        "task": c.get("task"),
+                        "task_type": c.get("task_type"),
+                        "step": step_ctx.get("step"),
+                        "context": step_ctx.get("prompt_text"),
+                    }
+                )
+        existing.extend(flattened)
+        with open(log_path, "w", encoding="utf-8") as f:
+            json.dump(existing, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+
+    def _dump_trajectories(self, trajectories, *, validate: bool = False):
+        if not trajectories:
+            return
+
+        if self.config.trainer.get("print_trajectories", False):
+            for trajectory in trajectories:
+                print("[Trajectory]")
+                print(json.dumps(trajectory, ensure_ascii=False, indent=2))
+                print(PICK_AND_PLACE_CORRECT_FORM)
+
+        log_path = self._trajectory_log_path()
+        if log_path:
+            log_dir = os.path.dirname(log_path)
+            if log_dir:
+                os.makedirs(log_dir, exist_ok=True)
+            existing = []
+            if os.path.exists(log_path) and os.path.getsize(log_path) > 0:
+                with open(log_path, "r", encoding="utf-8") as f:
+                    existing = json.load(f)
+                if not isinstance(existing, list):
+                    raise ValueError(f"Trajectory log must contain a JSON list: {log_path}")
+            existing.extend(trajectories)
+            with open(log_path, "w", encoding="utf-8") as f:
+                json.dump(existing, f, ensure_ascii=False, indent=2)
+                f.write("\n")
+
+        self._log_trajectories_to_wandb(trajectories, validate=validate)
+        self._log_contexts_to_wandb(trajectories, validate=validate)
 
     def preprocess_single_sample(
         self,
@@ -182,6 +544,9 @@ class TrajectoryCollector:
             'data_source': data_source
         })
 
+        if self.config.trainer.get("wandb_log_contexts", False):
+            row_dict['prompt_text'] = prompt_with_chat_template
+
         if self.config.data.get('return_raw_chat', False):
             row_dict['raw_prompt'] = chat.tolist()
         
@@ -307,6 +672,7 @@ class TrajectoryCollector:
 
         # Initial observations from the environment
         obs, infos = envs.reset(kwargs=gen_batch.non_tensor_batch.pop('env_kwargs', None))
+        reset_infos = infos
 
         lenght_obs = len(obs['text']) if obs['text'] is not None else len(obs['image'])
         assert len(gen_batch.batch) == lenght_obs, f"gen_batch size {len(gen_batch.batch)} does not match obs size {lenght_obs}"
@@ -328,11 +694,50 @@ class TrajectoryCollector:
         episode_lengths = np.zeros(batch_size, dtype=np.float32)
         episode_rewards = np.zeros(batch_size, dtype=np.float32)
         tool_callings = np.zeros(batch_size, dtype=np.float32)
+        valid_action_counts = np.zeros(batch_size, dtype=np.float32)
+        active_action_counts = np.zeros(batch_size, dtype=np.float32)
+        trajectory_records = [
+            {
+                "global_step": self._json_safe(gen_batch.meta_info.get("global_step", None)),
+                "trajectory_index": i,
+                "uid": None,
+                "traj_uid": traj_uid[i],
+                "task": getattr(envs, "tasks", [None] * batch_size)[i],
+                "gamefile": reset_infos[i].get("extra.gamefile") if i < len(reset_infos) else None,
+                "task_type": None,
+                "prompt_text": None,
+                "contexts": [],
+                "pick_and_place_correct_form": PICK_AND_PLACE_CORRECT_FORM,
+                "steps": [],
+            }
+            for i in range(batch_size)
+        ] if self._trajectory_logging_enabled() else None
+
+        if trajectory_records is not None:
+            for i, record in enumerate(trajectory_records):
+                gamefile = record["gamefile"] or ""
+                record["task_type"] = "pick_and_place" if (
+                    "pick_and_place" in gamefile and "pick_two_obj_and_place" not in gamefile
+                ) else "other"
         # Trajectory collection loop
         for _step in range(self.config.env.max_steps):
             active_masks = np.logical_not(is_done)
+            if not active_masks.any():
+                break
 
             batch = self.preprocess_batch(gen_batch=gen_batch, obs=obs)
+            prompt_texts = batch.non_tensor_batch.get("prompt_text", None)
+            if trajectory_records is not None and prompt_texts is not None:
+                for i in range(batch_size):
+                    if trajectory_records[i].get("prompt_text") is None:
+                        trajectory_records[i]["prompt_text"] = self._json_safe(prompt_texts[i])
+                    if active_masks[i] and len(trajectory_records[i]["contexts"]) < 8:
+                        trajectory_records[i]["contexts"].append(
+                            {
+                                "step": _step + 1,
+                                "prompt_text": self._json_safe(prompt_texts[i]),
+                            }
+                        )
 
             batch_keys_to_pop = ["input_ids", "attention_mask", "position_ids"]
             non_tensor_batch_keys_to_pop = ["raw_prompt_ids"]
@@ -361,6 +766,7 @@ class TrajectoryCollector:
             batch = batch.union(batch_output)
             
             text_actions = self.tokenizer.batch_decode(batch.batch['responses'], skip_special_tokens=True)
+            parsed_think_actions = [self._extract_think_action(t) for t in text_actions]
             
             next_obs, rewards, dones, infos = envs.step(text_actions)
 
@@ -375,6 +781,8 @@ class TrajectoryCollector:
                 batch.non_tensor_batch['is_action_valid'] = np.array([info['is_action_valid'] for info in infos], dtype=bool)
             else:
                 batch.non_tensor_batch['is_action_valid'] = np.ones(batch_size, dtype=bool)
+            valid_action_counts[active_masks] += batch.non_tensor_batch['is_action_valid'][active_masks].astype(np.float32)
+            active_action_counts[active_masks] += 1.0
 
             if 'tool_calling' in infos[0]:
                 tool_callings[active_masks] += np.array([info['tool_calling'] for info in infos], dtype=np.float32)[active_masks]
@@ -386,6 +794,39 @@ class TrajectoryCollector:
             assert len(rewards) == batch_size, f"env should return rewards for all environments, got {len(rewards)} rewards for {batch_size} environments"
             batch.non_tensor_batch['rewards'] = torch_to_numpy(rewards, is_object=True)
             batch.non_tensor_batch['active_masks'] = torch_to_numpy(active_masks, is_object=True)
+
+            if trajectory_records is not None:
+                obs_anchor = obs.get("anchor", None)
+                next_obs_anchor = next_obs.get("anchor", None)
+                obs_text = obs.get("text", None) if self.config.trainer.get("trajectory_include_prompt", False) else None
+                for i in range(batch_size):
+                    if not active_masks[i]:
+                        continue
+                    info_i = infos[i]
+                    step_record = {
+                        "step": _step + 1,
+                        "active": self._json_safe(active_masks[i]),
+                        "observation": self._json_safe(obs_anchor[i] if obs_anchor is not None else None),
+                        "raw_response": self._json_safe(text_actions[i]),
+                        "think": self._json_safe(parsed_think_actions[i][0]),
+                        "action_text": self._json_safe(parsed_think_actions[i][1]),
+                        "model_output": self._json_safe(text_actions[i]),
+                        "env_action": self._json_safe(info_i.get("env_action", None)),
+                        "is_action_valid": self._json_safe(info_i.get("is_action_valid", None)),
+                        "reward": self._json_safe(torch_to_numpy(rewards)[i]),
+                        "done": self._json_safe(dones[i]),
+                        "won": self._json_safe(info_i.get("won", None)),
+                        "goal_condition_success_rate": self._json_safe(
+                            info_i.get("goal_condition_success_rate", None)
+                        ),
+                        "next_observation": self._json_safe(
+                            next_obs_anchor[i] if next_obs_anchor is not None else None
+                        ),
+                    }
+                    if obs_text is not None:
+                        step_record["prompt"] = self._json_safe(obs_text[i])
+                    trajectory_records[i]["uid"] = uid_batch[i]
+                    trajectory_records[i]["steps"].append(step_record)
             
             # Update episode lengths for active environments
             batch_list: list[dict] = to_list_of_dict(batch)
@@ -410,6 +851,44 @@ class TrajectoryCollector:
                     episode_rewards=episode_rewards, 
                     episode_lengths=episode_lengths,
                     )
+        valid_action_ratios = np.divide(
+            valid_action_counts,
+            np.maximum(active_action_counts, 1.0),
+        )
+
+        if trajectory_records is not None:
+            success_values = success.get("success_rate", np.zeros(batch_size, dtype=np.float32))
+            for i, record in enumerate(trajectory_records):
+                record["episode_reward"] = self._json_safe(episode_rewards[i])
+                record["episode_length"] = self._json_safe(episode_lengths[i])
+                record["tool_callings"] = self._json_safe(tool_callings[i])
+                record["valid_action_rate"] = self._json_safe(valid_action_ratios[i])
+                record["success_rate"] = self._json_safe(success_values[i]) if i < len(success_values) else None
+                if record["task_type"] == "pick_and_place":
+                    record["pick_and_place_success_rate"] = record["success_rate"]
+            self._dump_contexts(
+                [
+                    {
+                        "global_step": r["global_step"],
+                        "trajectory_index": r["trajectory_index"],
+                        "task": r["task"],
+                        "contexts": r.get("contexts", []),
+                        "task_type": r.get("task_type"),
+                    }
+                    for r in trajectory_records[: max(1, int(self.config.trainer.get("wandb_context_samples_per_rollout", 5)))]
+                ]
+            )
+            self._dump_trajectories(
+                trajectory_records,
+                validate=bool(gen_batch.meta_info.get("validate", False)),
+            )
+
+        self._print_compact_rollout_summary(
+            gen_batch=gen_batch,
+            episode_lengths=episode_lengths,
+            success=success,
+            valid_action_ratios=valid_action_ratios,
+        )
         
         return total_batch_list, episode_rewards, episode_lengths, success, traj_uid, tool_callings
     
