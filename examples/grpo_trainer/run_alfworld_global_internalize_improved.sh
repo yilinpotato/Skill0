@@ -14,7 +14,7 @@ cd "$REPO_ROOT"
 # ============================================================================
 # 使用环境变量 CONFIG_PROFILE 选择配置：
 # - stable: 稳定版（低显存占用，适合单卡）
-# - balanced: 平衡版（中等显存，适合双卡）
+# - balanced: 平衡版（中等显存，适合多 GPU 或单卡大显存）
 # - performance: 性能版（高显存，适合多卡）
 CONFIG_PROFILE="${CONFIG_PROFILE:-stable}"
 
@@ -24,9 +24,10 @@ if [[ $# -gt 0 ]]; then
 fi
 
 export VLLM_ATTENTION_BACKEND="${VLLM_ATTENTION_BACKEND:-FLASH_ATTN}"
-export MODEL_PATH="${MODEL_PATH:-/data/ywh/model/Meta-Llama-3.2-3B-Instruct-128k}"
-export DATA_ROOT="${DATA_ROOT:-/data2/myl/skillrl_data/verl-agent}"
-export OUTPUT_ROOT="${OUTPUT_ROOT:-/data2/myl/skillrl_outputs}"
+export MODEL_PATH="${MODEL_PATH:-$HOME/.cache/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507}"
+export PROJECT_ROOT="${PROJECT_ROOT:-$REPO_ROOT}"
+export DATA_ROOT="${DATA_ROOT:-$PROJECT_ROOT/skillrl_data/verl-agent}"
+export OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/skillrl_outputs}"
 export EXPERIMENT_NAME="${EXPERIMENT_NAME:-alfworld_text_llama32_3b_global_internalize_lora_${CONFIG_PROFILE}}"
 export RAY_memory_usage_threshold="${RAY_memory_usage_threshold:-0.99}"
 export PYTHONFAULTHANDLER="${PYTHONFAULTHANDLER:-1}"
@@ -90,7 +91,7 @@ if [[ "$CONFIG_PROFILE" == "stable" ]]; then
 
 elif [[ "$CONFIG_PROFILE" == "balanced" ]]; then
   echo "=== 使用平衡配置（Balanced Profile）==="
-  echo "特点：中等显存占用，适合双卡或单卡 40GB"
+  echo "特点：中等显存占用，适合多 GPU 或单卡 40GB 以上"
 
   default_train_data_size=2
   default_val_data_size=8

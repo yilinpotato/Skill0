@@ -13,9 +13,10 @@ cd "$REPO_ROOT"
 # 配置
 # ============================================================================
 
-export MODEL_PATH="${MODEL_PATH:-/data/ywh/model/Meta-Llama-3.2-3B-Instruct-128k}"
-export DATA_ROOT="${DATA_ROOT:-/data2/myl/skillrl_data/verl-agent}"
-export OUTPUT_ROOT="${OUTPUT_ROOT:-/data2/myl/skillrl_outputs}"
+export MODEL_PATH="${MODEL_PATH:-$HOME/.cache/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507}"
+export PROJECT_ROOT="${PROJECT_ROOT:-$REPO_ROOT}"
+export DATA_ROOT="${DATA_ROOT:-$PROJECT_ROOT/skillrl_data/verl-agent}"
+export OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/skillrl_outputs}"
 export SKILLS_JSON="${SKILLS_JSON:-memory_data/alfworld/claude_style_skills.json}"
 export TRAJ_DIR="${TRAJ_DIR:-$OUTPUT_ROOT/expert_trajectories}"
 export SFT_OUTPUT_DIR="${SFT_OUTPUT_DIR:-$OUTPUT_ROOT/sft_warmup}"

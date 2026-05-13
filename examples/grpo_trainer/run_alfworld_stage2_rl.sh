@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 阶段2：基于 SFT 预热模型进行 RL 微调（双 3090 优化版）
+# 阶段2：基于 SFT 预热模型进行 RL 微调
 
 set -euo pipefail
 set -x
@@ -12,9 +12,10 @@ cd "$REPO_ROOT"
 # 配置
 # ============================================================================
 
-export MODEL_PATH="${SFT_MODEL_PATH:-/data2/myl/skillrl_outputs/sft_warmup/global_step_1000}"
-export DATA_ROOT="${DATA_ROOT:-/data2/myl/skillrl_data/verl-agent}"
-export OUTPUT_ROOT="${OUTPUT_ROOT:-/data2/myl/skillrl_outputs}"
+export PROJECT_ROOT="${PROJECT_ROOT:-$REPO_ROOT}"
+export OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/skillrl_outputs}"
+export MODEL_PATH="${SFT_MODEL_PATH:-$OUTPUT_ROOT/sft_warmup/global_step_1000}"
+export DATA_ROOT="${DATA_ROOT:-$PROJECT_ROOT/skillrl_data/verl-agent}"
 export EXPERIMENT_NAME="${EXPERIMENT_NAME:-alfworld_rl_after_sft}"
 
 # 检测 GPU 数量
@@ -48,7 +49,7 @@ export LORA_ALPHA="${LORA_ALPHA:-128}"
 export DENSE_REWARD="${DENSE_REWARD:-True}"
 export INVALID_ACTION_PENALTY_COEF="${INVALID_ACTION_PENALTY_COEF:-0.05}"
 
-# 双 3090 显存参数
+# vLLM/FSDP 显存参数
 if [[ "$n_gpus_per_node" -ge 2 ]]; then
   export VLLM_GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.45}"
   export VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-8192}"
@@ -68,7 +69,7 @@ else
 fi
 
 echo "============================================"
-echo "阶段 2：RL 微调（SFT 预热后，双 3090）"
+echo "阶段 2：RL 微调（SFT 预热后）"
 echo "============================================"
 echo "SFT 模型路径: $MODEL_PATH"
 echo "实验名称: $EXPERIMENT_NAME"
@@ -128,7 +129,7 @@ ppo_args=(
     actor_rollout_ref.actor.fsdp_config.param_offload=False
     "actor_rollout_ref.actor.fsdp_config.optimizer_offload=$OPTIMIZER_OFFLOAD"
 
-    # Rollout（双卡 tensor parallelism）
+    # Rollout
     "actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=$LOG_PROB_MICRO_BATCH_PER_GPU"
     "actor_rollout_ref.rollout.tensor_model_parallel_size=$VLLM_TP_SIZE"
     actor_rollout_ref.rollout.name=vllm

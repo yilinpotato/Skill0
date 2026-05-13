@@ -6,9 +6,9 @@ episodes, and saves them as multi-turn parquet for fsdp_sft_trainer.
 
 Usage:
     python3 scripts/collect_sft_trajectories.py \
-        --model-path /data/ywh/model/Meta-Llama-3.2-3B-Instruct-128k \
+        --model-path ~/.cache/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507 \
         --skills-json memory_data/alfworld/claude_style_skills.json \
-        --output-dir /data2/myl/skillrl_outputs/expert_trajectories \
+        --output-dir skillrl_outputs/expert_trajectories \
         --num-envs 16 \
         --min-trajectories 100
 """
@@ -25,9 +25,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--model-path", default="/data/ywh/model/Meta-Llama-3.2-3B-Instruct-128k")
+    p.add_argument(
+        "--model-path",
+        default=os.environ.get("MODEL_PATH", str(Path.home() / ".cache/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507")),
+    )
     p.add_argument("--skills-json", default="memory_data/alfworld/claude_style_skills.json")
-    p.add_argument("--output-dir", default="/data2/myl/skillrl_outputs/expert_trajectories")
+    default_output_dir = Path(os.environ.get("OUTPUT_ROOT", Path(__file__).resolve().parent.parent / "skillrl_outputs")) / "expert_trajectories"
+    p.add_argument("--output-dir", default=str(default_output_dir))
     p.add_argument("--num-envs", type=int, default=16)
     p.add_argument("--max-steps", type=int, default=50)
     p.add_argument("--top-k-skills", type=int, default=12)

@@ -34,7 +34,8 @@ def parse_args():
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--eval-dataset", default="eval_in_distribution")
     p.add_argument("--use-dense-reward", action="store_true")
-    p.add_argument("--output-dir", default="/data2/myl/skillrl_outputs/alfworld_api_eval")
+    output_root = os.environ.get("OUTPUT_ROOT", str(Path(__file__).resolve().parent.parent / "skillrl_outputs"))
+    p.add_argument("--output-dir", default=os.path.join(output_root, "alfworld_api_eval"))
     return p.parse_args()
 
 
