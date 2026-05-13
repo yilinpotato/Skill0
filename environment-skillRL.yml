@@ -1,0 +1,14 @@
+name: skillRL
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - gcc_linux-64=11
+  - gxx_linux-64=11
+  - binutils_linux-64=2.40
+  - openjdk=11
+  - faiss-cpu
+  - pip:
+      - -r requirements-skillRL.txt

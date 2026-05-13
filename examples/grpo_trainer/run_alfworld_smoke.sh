@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# 超快速 ALFWorld smoke training
+# 用于验证提示词/日志/W&B/轨迹链路是否生效
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$REPO_ROOT"
+
+# conda activation hooks can reference backup vars that are not set yet;
+# temporarily disable nounset around activation.
+set +u
+source /data2/myl/miniconda3/etc/profile.d/conda.sh
+conda activate skillRL
+set -u
+
+export MODEL_PATH="${MODEL_PATH:-/data2/myl/Qwen3-4B-Thinking-2507}"
+export OUTPUT_ROOT="${OUTPUT_ROOT:-/data2/myl/skillrl_outputs}"
+export EXPERIMENT_NAME="${EXPERIMENT_NAME:-alfworld_smoke}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+export WANDB_PROJECT="${WANDB_PROJECT:-skillrl_mvp}"
+export WANDB_NAME="${WANDB_NAME:-$EXPERIMENT_NAME}"
+export WANDB_RUN_GROUP="${WANDB_RUN_GROUP:-alfworld_smoke}"
+export WANDB_DIR="${WANDB_DIR:-$OUTPUT_ROOT/wandb}"
+export TRAINER_LOGGER="${TRAINER_LOGGER:-['console','wandb']}"
+
+export TRAIN_DATA_SIZE="${TRAIN_DATA_SIZE:-1}"
+export GROUP_SIZE="${GROUP_SIZE:-1}"
+export TOTAL_TRAINING_STEPS="${TOTAL_TRAINING_STEPS:-1}"
+export SAVE_FREQ="${SAVE_FREQ:-1}"
+export TEST_FREQ="${TEST_FREQ:-1}"
+export ACTOR_LR="${ACTOR_LR:-1e-5}"
+export LR_WARMUP_STEPS="${LR_WARMUP_STEPS:-100}"
+export LR_SCHEDULER="${LR_SCHEDULER:-cosine}"
+export ENTROPY_COEFF="${ENTROPY_COEFF:-0.02}"
+export NORMALIZE_REWARD="${NORMALIZE_REWARD:-True}"
+export REWARD_CLIP="${REWARD_CLIP:-10.0}"
+export GLOBAL_TOP_K_SCHEDULE="${GLOBAL_TOP_K_SCHEDULE:-[12,12,12,8,8,8,6,6,6,4,4,4,2,2,2,0]}"
+export GLOBAL_INTERNALIZATION_MODE="${GLOBAL_INTERNALIZATION_MODE:-skillzero}"
+export MAX_STEPS="${MAX_STEPS:-6}"
+export HISTORY_LENGTH="${HISTORY_LENGTH:-2}"
+export DENSE_REWARD="${DENSE_REWARD:-False}"
+export TRAIN_TASK_TYPE="${TRAIN_TASK_TYPE:-pick_and_place}"
+export EVAL_TASK_TYPE="${EVAL_TASK_TYPE:-pick_and_place}"
+export INVALID_ACTION_PENALTY_COEF="${INVALID_ACTION_PENALTY_COEF:-0.05}"
+export MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-256}"
+export VLLM_GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.50}"
+export VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-2048}"
+export VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-256}"
+export VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-1}"
+export VLLM_TP_SIZE="${VLLM_TP_SIZE:-1}"
+export ENABLE_RESOURCE_MONITOR="${ENABLE_RESOURCE_MONITOR:-0}"
+export WANDB_LOG_CONTEXTS="${WANDB_LOG_CONTEXTS:-True}"
+export WANDB_CONTEXT_SAMPLES_PER_ROLLOUT="${WANDB_CONTEXT_SAMPLES_PER_ROLLOUT:-5}"
+export WANDB_LOG_TRAJECTORIES="${WANDB_LOG_TRAJECTORIES:-True}"
+export WANDB_MAX_TRAJECTORIES="${WANDB_MAX_TRAJECTORIES:-5}"
+export WANDB_MAX_TRAJECTORY_STEPS="${WANDB_MAX_TRAJECTORY_STEPS:-5}"
+export WANDB_MAX_TEXT_CHARS="${WANDB_MAX_TEXT_CHARS:-400}"
+export WANDB_MAX_SUMMARY_ROWS="${WANDB_MAX_SUMMARY_ROWS:-200}"
+export WANDB_MAX_STEP_ROWS="${WANDB_MAX_STEP_ROWS:-1000}"
+export WANDB_INIT_TIMEOUT="${WANDB_INIT_TIMEOUT:-60}"
+export WANDB_GRAPHQL_TIMEOUT="${WANDB_GRAPHQL_TIMEOUT:-60}"
+export LOG_VAL_GENERATIONS="${LOG_VAL_GENERATIONS:-5}"
+export PRINT_TRAJECTORIES="${PRINT_TRAJECTORIES:-False}"
+export COMPACT_CONSOLE_OUTPUT="${COMPACT_CONSOLE_OUTPUT:-True}"
+export RESUME_DATALOADER_STATE="${RESUME_DATALOADER_STATE:-False}"
+
+exec bash examples/grpo_trainer/run_alfworld_fixed_single_stage.sh "$@"

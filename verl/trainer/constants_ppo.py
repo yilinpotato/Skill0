@@ -48,7 +48,14 @@ def get_ppo_ray_runtime_env():
         "env_vars": PPO_RAY_RUNTIME_ENV["env_vars"].copy(),
         **({"working_dir": None} if working_dir is None else {}),
     }
-    for key in list(runtime_env["env_vars"].keys()):
+    passthrough_env_vars = [
+        "RESOURCE_DIAGNOSTICS_DIR",
+        "PYTHONFAULTHANDLER",
+    ]
+    for key in passthrough_env_vars:
         if os.environ.get(key) is not None:
+            runtime_env["env_vars"][key] = os.environ[key]
+    for key in list(runtime_env["env_vars"].keys()):
+        if os.environ.get(key) is not None and key not in passthrough_env_vars:
             runtime_env["env_vars"].pop(key, None)
     return runtime_env

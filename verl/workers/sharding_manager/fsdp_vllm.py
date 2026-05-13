@@ -263,6 +263,14 @@ class FSDPVLLMShardingManager(BaseShardingManager):
         model = self.model_runner.model
         if peft_config:
             if self.base_sync_done:
+                try:
+                    existing_lora_ids = list(self.inference_engine.llm_engine.list_loras())
+                    for lora_id in existing_lora_ids:
+                        self.inference_engine.llm_engine.remove_lora(lora_id)
+                    if existing_lora_ids:
+                        logger.info(f"Removed stale vLLM LoRA adapters before sync: {existing_lora_ids}")
+                except Exception as exc:
+                    logger.warning(f"Failed to remove stale vLLM LoRA adapters before sync: {exc}")
                 lora_int_id=int(time.time_ns() % 0x7FFFFFFF)
                 lora_reqest = TensorLoRARequest(
                     lora_name=f"{lora_int_id}",

@@ -299,6 +299,14 @@ env:
     num_gpus: 0
   rollout:
     n: 1 # the group number of envs (for GRPO and GiGPO).
+  skills_only_memory:
+    skillzero_include_task_specific: true
+    onpolicy_helpfulness_eval_enabled: false
+    onpolicy_helpfulness_eval_auto_internalize: false
+    onpolicy_helpfulness_eval_delta_threshold: 0.01
+    onpolicy_helpfulness_eval_patience: 1
+    onpolicy_helpfulness_eval_remove_per_round: 1
+    onpolicy_helpfulness_eval_min_active_skills: 0
   alfworld:
     eval_dataset: eval_in_distribution
   search:

@@ -56,9 +56,12 @@ from verl.utils.fsdp_utils import (
 )
 from verl.utils.import_utils import import_external_libs
 from verl.utils.model import compute_position_id_with_mask
+from verl.utils.resource_diagnostics import register_resource_diagnostics
 from verl.workers.sharding_manager.fsdp_ulysses import FSDPUlyssesShardingManager
 from verl.utils.device import get_device_name, get_torch_device, is_cuda_available, is_npu_available
 
+
+register_resource_diagnostics()
 
 from peft import LoraConfig, TaskType, get_peft_model
 from codetiming import Timer

@@ -1,4 +1,6 @@
-# requirements.txt records the full set of dependencies for development
+# requirements.txt records a generic development dependency set.
+# For the current ALFWorld + Qwen3 + vLLM + Ray deployment on A800 / CUDA 12.8,
+# prefer `requirements-skillRL.txt` and `environment-skillRL.yml`.
 accelerate
 codetiming
 datasets
@@ -14,10 +16,10 @@ pybind11
 pylatexenc
 pre-commit
 ray[default]
-tensordict<=0.6.2
+tensordict==0.10.0
 torchdata
-transformers==4.51.1
-# vllm==0.8.4
+transformers==4.57.3
+# vllm version depends on the CUDA / torch stack used by the target machine.
 wandb
 packaging>=20.0
 uvicorn

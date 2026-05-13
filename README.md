@@ -34,6 +34,187 @@ SkillRL is a framework that enables LLM agents to learn high-level, reusable beh
 
 ---
 
+## ALFWorld Global Skill Internalization MVP
+
+This workspace includes a small-model MVP for **ALFWorld text-only global skill internalization**. The goal is to use SkillRL as the execution/RL framework and fade global skills out of the prompt during GRPO so the local model learns the general behavior patterns in its parameters. This MVP does not implement cloud-side skill extraction, does not use SkillBench, and does not use old checkpoints.
+
+### Design
+
+- **Execution framework**: SkillRL GRPO multi-turn ALFWorld environment.
+- **Default model**: local SFT checkpoint `/data2/myl/qwen3-4b`.
+- **Skills**: `memory_data/alfworld/claude_style_skills.json`.
+- **Internalized context**: `general_skills` plus `common_mistakes`.
+- **External context retained**: `task_specific_skills`, so the first demo only tests global-skill internalization.
+- **Curriculum**: `global_top_k_schedule=[12,6,0]`, meaning global skills are fully visible early, partially visible in the middle, and removed late in training.
+- **Evaluation contrast**: final validation also logs `val/external_global/...` and `val/internalized_global_off/...` metrics.
+
+### Run
+
+```bash
+conda activate skillRL
+cd /data2/myl/SkillRL
+
+# Fix ALFWorld's default ~/.cache/alfworld lookup without moving data back to /home.
+bash scripts/setup_alfworld_cache.sh
+
+# Run the 0.5B text-only internalization MVP.
+bash examples/grpo_trainer/run_alfworld_global_internalize_0_5b.sh
+```
+
+The script writes generated parquet carrier data to `/data2/myl/skillrl_data/verl-agent/text` and checkpoints/log outputs to `/data2/myl/skillrl_outputs`, avoiding `/home` storage pressure. It records validation every `TEST_FREQ=10` steps and saves checkpoints every `SAVE_FREQ=10` steps by default.
+
+Important output files:
+
+```text
+/data2/myl/skillrl_outputs/skillrl_mvp/<experiment>/output.log
+/data2/myl/skillrl_outputs/skillrl_mvp/<experiment>/metrics.jsonl
+/data2/myl/skillrl_outputs/skillrl_mvp/<experiment>/run_config.env
+/data2/myl/skillrl_outputs/skillrl_mvp/<experiment>/ppo_args.txt
+/data2/myl/skillrl_outputs/skillrl_mvp/<experiment>/global_step_<N>/actor/
+```
+
+`metrics.jsonl` is the easiest file for comparing progress across checkpoints. Checkpoints are saved at steps 10, 20, 30, ...
+
+Default MVP sizing is intentionally conservative for Qwen3-4B on RTX 3090-class GPUs:
+
+- single GPU: `TRAIN_DATA_SIZE=2`, `VAL_DATA_SIZE=4`, `GROUP_SIZE=1`
+- two GPUs: `TRAIN_DATA_SIZE=4`, `VAL_DATA_SIZE=8`, `GROUP_SIZE=2`
+- `TOTAL_TRAINING_STEPS=60`
+- `TEST_FREQ=10`
+- `SAVE_FREQ=10`
+- `LORA_RANK=32`
+- actor/ref FSDP model dtype is `bf16`, because FlashAttention2 does not support fp32 model weights.
+
+For single-GPU debugging, expose only GPU0. The script detects a single visible GPU and automatically switches to smaller defaults: `TRAIN_DATA_SIZE=4`, `VAL_DATA_SIZE=4`, `GROUP_SIZE=2`, `PPO_MICRO_BATCH_SIZE_PER_GPU=1`, lower vLLM memory reservation, and actor optimizer offload.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+  bash examples/grpo_trainer/run_alfworld_global_internalize_0_5b.sh vllm
+```
+
+For a faster single-GPU debug pass, reduce validation and episode length. This is useful for checking the end-to-end loop, but `MAX_STEPS < 50` changes the ALFWorld task horizon and should not be used for the final MVP result.
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+TRAIN_DATA_SIZE=2 VAL_DATA_SIZE=2 GROUP_SIZE=1 \
+TOTAL_TRAINING_STEPS=10 TEST_FREQ=10 MAX_STEPS=25 \
+MAX_RESPONSE_LENGTH=256 \
+  bash examples/grpo_trainer/run_alfworld_global_internalize_0_5b.sh vllm
+```
+
+Reducing `VAL_DATA_SIZE` and increasing `TEST_FREQ` mainly saves evaluation time. Reducing `TRAIN_DATA_SIZE`, `GROUP_SIZE`, or `MAX_STEPS` changes the training signal and is best treated as debugging only.
+
+For a higher-signal single-GPU MVP run, keep the full ALFWorld horizon and let the script use dense progress reward plus a lower rollout temperature:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+TRAIN_DATA_SIZE=4 VAL_DATA_SIZE=4 GROUP_SIZE=2 \
+TOTAL_TRAINING_STEPS=80 TEST_FREQ=20 MAX_STEPS=50 \
+MAX_RESPONSE_LENGTH=256 ROLLOUT_TEMPERATURE=0.6 \
+  bash examples/grpo_trainer/run_alfworld_global_internalize_0_5b.sh vllm
+```
+
+For short debug runs (`TOTAL_TRAINING_STEPS<=30`), the script keeps `GLOBAL_TOP_K_SCHEDULE=[12]` by default so you are measuring the environment loop and action quality instead of immediately turning global skills off. Longer runs default to `[12,6,0]` for internalization.
+
+### Resource Diagnostics
+
+The ALFWorld MVP script starts a lightweight resource monitor by default. Logs are written under:
+
+```text
+/data2/myl/skillrl_outputs/skillrl_mvp/<experiment>/diagnostics/<timestamp>/
+```
+
+Key files:
+
+- `resource_monitor.log`: periodic `nvidia-smi`, system memory, and top process snapshots.
+- `resource_events.log`: threshold events and the Python/Ray worker PIDs that were signaled.
+- `python_stack_pid*.log`: Python stack traces and PyTorch CUDA memory summaries captured when GPU or system memory crosses the threshold.
+
+Useful knobs:
+
+```bash
+ENABLE_RESOURCE_MONITOR=1
+RESOURCE_MONITOR_INTERVAL=5
+GPU_MEMORY_WARN_PCT=90
+CPU_MEMORY_WARN_PCT=92
+RESOURCE_TRACE_COOLDOWN=60
+ENABLE_RESOURCE_TRACE_SIGNAL=0
+DIAGNOSTICS_DIR=/data2/myl/skillrl_outputs/debug_diagnostics
+```
+
+By default the monitor only records threshold events. Set `ENABLE_RESOURCE_TRACE_SIGNAL=1` to send `SIGUSR1` to Python/Ray workers and dump the current Python stack plus CUDA memory summary. Leave it off for normal training because some Ray/vLLM subprocesses can exit if they receive `SIGUSR1` before the Python handler is installed.
+
+### Results And Evaluation
+
+Training metrics are printed to the console because the MVP uses `trainer.logger=['console']`. Check the terminal/tmux scrollback for lines such as:
+
+```text
+step:<N> - ... episode/success_rate:... val/success_rate:...
+Final validation metrics: {...}
+```
+
+Diagnostics are under:
+
+```text
+/data2/myl/skillrl_outputs/skillrl_mvp/<experiment>/diagnostics/
+```
+
+Checkpoints are saved under:
+
+```text
+/data2/myl/skillrl_outputs/skillrl_mvp/<experiment>/global_step_<N>/
+```
+
+The MVP script now defaults `SAVE_FREQ` to `TOTAL_TRAINING_STEPS`, so a final checkpoint is saved. To disable checkpointing:
+
+```bash
+SAVE_FREQ=-1 bash examples/grpo_trainer/run_alfworld_global_internalize_0_5b.sh vllm
+```
+
+Run base-model evaluation only:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+VAL_DATA_SIZE=8 MAX_STEPS=50 MAX_RESPONSE_LENGTH=256 \
+  bash examples/grpo_trainer/eval_alfworld_global_internalize_0_5b.sh vllm
+```
+
+Run base-vs-trained evaluation after training:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+TRAINED_CKPT=/data2/myl/skillrl_outputs/skillrl_mvp/alfworld_text_qwen25_0_5b_global_internalize/global_step_80 \
+VAL_DATA_SIZE=8 MAX_STEPS=50 MAX_RESPONSE_LENGTH=256 \
+  bash examples/grpo_trainer/eval_alfworld_global_internalize_0_5b.sh vllm
+```
+
+Summarize logs:
+
+```bash
+python scripts/summarize_alfworld_eval.py \
+  /data2/myl/skillrl_outputs/evals/alfworld_text_qwen25_0_5b_global_internalize
+```
+
+The original larger probe size can still be requested explicitly when the node has enough free RAM:
+
+```bash
+TRAIN_DATA_SIZE=16 VAL_DATA_SIZE=64 GROUP_SIZE=8 \
+  bash examples/grpo_trainer/run_alfworld_global_internalize_0_5b.sh
+```
+
+For a fast smoke test:
+
+```bash
+TOTAL_TRAINING_STEPS=2 TEST_FREQ=1 \
+  bash examples/grpo_trainer/run_alfworld_global_internalize_0_5b.sh
+```
+
+### Hardware Note
+
+Two RTX 3090 GPUs are reasonable for this 0.5B full-parameter GRPO MVP. Full-parameter 8B GRPO on two 3090s is not recommended because actor, reference policy, vLLM rollout, optimizer state, and long ALFWorld prompts create high memory pressure and poor throughput. For 8B, prefer LoRA/QLoRA or more GPUs.
+
+---
+
 ## 📥 Model Download
 
 You can directly download the model weights by following the links below.

@@ -24,6 +24,10 @@ from omegaconf import OmegaConf
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 from verl.trainer.ppo.reward import load_reward_manager
 from verl.trainer.constants_ppo import get_ppo_ray_runtime_env
+from verl.utils.resource_diagnostics import register_resource_diagnostics
+
+
+register_resource_diagnostics()
 
 
 @hydra.main(config_path="config", config_name="ppo_trainer", version_base=None)
@@ -54,6 +58,7 @@ def run_ppo(config) -> None:
 @ray.remote(num_cpus=1)  # please make sure main_task is not scheduled on head
 class TaskRunner:
     def run(self, config):
+        register_resource_diagnostics()
         # print initial config
         from pprint import pprint
 

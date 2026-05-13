@@ -45,9 +45,9 @@ def get_obs_image(env):
     image_tensors = torch.stack(image_tensors, dim=0)
     return image_tensors
 
-def compute_reward(info, multi_modal=False):
-    if multi_modal:
-        reward = 10.0 * float(info['won']) + float(info['goal_condition_success_rate'])
+def compute_reward(info, multi_modal=False, use_dense_reward=False):
+    if multi_modal or use_dense_reward:
+        reward = 10.0 * float(info['won']) + float(info.get('goal_condition_success_rate', 0.0))
     else:
         reward = 10.0 * float(info['won'])
     return reward
@@ -58,9 +58,11 @@ class AlfworldWorker:
     Each actor holds one environment instance.
     """
     
-    def __init__(self, config, seed, base_env):
+    def __init__(self, config, seed, base_env, is_train=True, env_kwargs={}):
         self.env = base_env.init_env(batch_size=1)  # Each worker holds only one sub-environment
         self.env.seed(seed)
+        self.is_train = is_train
+        self.task_type = env_kwargs.get('train_task_type' if is_train else 'eval_task_type', None)
     
     def step(self, action):
         """Execute a step in the environment"""
@@ -73,8 +75,27 @@ class AlfworldWorker:
     def reset(self):
         """Reset the environment"""
         obs, infos = self.env.reset()
+        if self.task_type:
+            max_attempts = 200
+            for _ in range(max_attempts):
+                gamefile = infos.get('extra.gamefile', [None])[0]
+                if self._matches_task_type(gamefile):
+                    break
+                obs, infos = self.env.reset()
+            else:
+                raise RuntimeError(
+                    f"Unable to sample ALFWorld task type {self.task_type!r} "
+                    f"after {max_attempts} reset attempts."
+                )
         infos['observation_text'] = obs
         return obs, infos
+
+    def _matches_task_type(self, gamefile):
+        if not gamefile:
+            return False
+        if self.task_type == 'pick_and_place':
+            return 'pick_and_place' in gamefile and 'pick_two_obj_and_place' not in gamefile
+        return self.task_type in gamefile
     
     def getobs(self):
         """Get current observation image"""
@@ -95,6 +116,7 @@ class AlfworldEnvs(gym.Env):
         env_type = config['env']['type']
         base_env = get_environment(env_type)(config, train_eval='train' if is_train else eval_dataset)
         self.multi_modal = (env_type == 'AlfredThorEnv')
+        self.use_dense_reward = env_kwargs.get('use_dense_reward', False)
         self.num_processes = env_num * group_n
         self.group_n = group_n
 
@@ -102,7 +124,7 @@ class AlfworldEnvs(gym.Env):
         env_worker = ray.remote(**resources_per_worker)(AlfworldWorker)
         self.workers = []
         for i in range(self.num_processes):
-            worker = env_worker.remote(config, seed + (i // self.group_n), base_env)
+            worker = env_worker.remote(config, seed + (i // self.group_n), base_env, is_train, env_kwargs)
             self.workers.append(worker)
 
         self.prev_admissible_commands = [None for _ in range(self.num_processes)]
@@ -134,7 +156,7 @@ class AlfworldEnvs(gym.Env):
             info_list.append(info)
 
             self.prev_admissible_commands[i] = info['admissible_commands']
-            rewards_list.append(compute_reward(info, self.multi_modal))
+            rewards_list.append(compute_reward(info, self.multi_modal, self.use_dense_reward))
 
         if self.multi_modal:
             image_obs_list = self.getobs()
