@@ -173,15 +173,15 @@ export ALFWORLD_DATA=/path/to/shared/alfworld
 当前主训练脚本需要以下路径变量：
 
 ```bash
-export MODEL_PATH=/path/to/Qwen3-4B-Thinking-2507
-export DATA_ROOT=/path/to/skillrl_data/verl-agent
-export OUTPUT_ROOT=/path/to/skillrl_outputs
+export MODEL_PATH=$HOME/.cache/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507
+export DATA_ROOT=/GLOBALFS/hit_wxia_1/myl/skillrl_data/verl-agent
+export OUTPUT_ROOT=/GLOBALFS/hit_wxia_1/myl/skillrl_outputs
 ```
 
-超算部署前建议显式改成共享盘或个人工作盘路径，不要沿用本机的：
+当前项目根目录建议使用：
 
 ```text
-/data2/myl/...
+/GLOBALFS/hit_wxia_1/myl/SkillRL/
 ```
 
 ## 7. 训练前自检
@@ -244,9 +244,9 @@ bash examples/grpo_trainer/run_alfworld_smoke.sh
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 \
-MODEL_PATH=/path/to/Qwen3-4B-Thinking-2507 \
-DATA_ROOT=/path/to/skillrl_data/verl-agent \
-OUTPUT_ROOT=/path/to/skillrl_outputs \
+MODEL_PATH=$HOME/.cache/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507 \
+DATA_ROOT=/GLOBALFS/hit_wxia_1/myl/skillrl_data/verl-agent \
+OUTPUT_ROOT=/GLOBALFS/hit_wxia_1/myl/skillrl_outputs \
 EXPERIMENT_NAME=alfworld_qwen3_4b_thinking_hpc \
 bash examples/grpo_trainer/run_alfworld_fixed_single_stage.sh
 ```
@@ -308,15 +308,15 @@ module load cuda/12.8
 module load gcc/11
 module load java/11
 
-source /path/to/miniconda3/etc/profile.d/conda.sh
+source $HOME/miniconda3/etc/profile.d/conda.sh
 conda activate skillRL
 
-cd /path/to/SkillRL
+cd /GLOBALFS/hit_wxia_1/myl/SkillRL
 
 export ALFWORLD_DATA=/path/to/shared/alfworld
-export MODEL_PATH=/path/to/Qwen3-4B-Thinking-2507
-export DATA_ROOT=/path/to/skillrl_data/verl-agent
-export OUTPUT_ROOT=/path/to/skillrl_outputs
+export MODEL_PATH=$HOME/.cache/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507
+export DATA_ROOT=/GLOBALFS/hit_wxia_1/myl/skillrl_data/verl-agent
+export OUTPUT_ROOT=/GLOBALFS/hit_wxia_1/myl/skillrl_outputs
 export CUDA_VISIBLE_DEVICES=0
 export WANDB_INIT_TIMEOUT=120
 export WANDB_GRAPHQL_TIMEOUT=120

@@ -11,12 +11,12 @@ cd "$REPO_ROOT"
 # conda activation hooks can reference backup vars that are not set yet;
 # temporarily disable nounset around activation.
 set +u
-source /data2/myl/miniconda3/etc/profile.d/conda.sh
+source "${CONDA_SH_PATH:-$HOME/miniconda3/etc/profile.d/conda.sh}"
 conda activate skillRL
 set -u
 
-export MODEL_PATH="${MODEL_PATH:-/data2/myl/Qwen3-4B-Thinking-2507}"
-export OUTPUT_ROOT="${OUTPUT_ROOT:-/data2/myl/skillrl_outputs}"
+export MODEL_PATH="${MODEL_PATH:-$HOME/.cache/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507}"
+export OUTPUT_ROOT="${OUTPUT_ROOT:-$REPO_ROOT/../skillrl_outputs}"
 export EXPERIMENT_NAME="${EXPERIMENT_NAME:-alfworld_smoke}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export WANDB_PROJECT="${WANDB_PROJECT:-skillrl_mvp}"

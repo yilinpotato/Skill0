@@ -14,9 +14,9 @@ if [[ "$TRACE_SH" == "1" ]]; then
 fi
 
 export VLLM_ATTENTION_BACKEND="${VLLM_ATTENTION_BACKEND:-FLASH_ATTN}"
-export MODEL_PATH="${MODEL_PATH:-/data2/myl/Qwen3-4B-Thinking-2507}"
-export DATA_ROOT="${DATA_ROOT:-/data2/myl/skillrl_data/verl-agent}"
-export OUTPUT_ROOT="${OUTPUT_ROOT:-/data2/myl/skillrl_outputs}"
+export MODEL_PATH="${MODEL_PATH:-~/.cache/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507}"
+export DATA_ROOT="${DATA_ROOT:-/GLOBALFS/hit_wxia_1/myl/skillrl_data/verl-agent}"
+export OUTPUT_ROOT="${OUTPUT_ROOT:-/GLOBALFS/hit_wxia_1/myl/skillrl_outputs}"
 export EXPERIMENT_NAME="${EXPERIMENT_NAME:-alfworld_qwen3_4b_thinking_v3}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export RAY_memory_usage_threshold="${RAY_memory_usage_threshold:-0.99}"
