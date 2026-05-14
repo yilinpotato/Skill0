@@ -41,9 +41,14 @@ echo "检测到 GPU 数量: $n_gpus_per_node"
 echo "============================================"
 echo ""
 
-# A800 80GB can run a larger rollout batch than the previous 24GB setup.
-export TRAIN_DATA_SIZE="${TRAIN_DATA_SIZE:-16}"    # 每步 16 个任务
-export GROUP_SIZE="${GROUP_SIZE:-4}"               # 每任务 4 条 rollout -> 每步 64 条
+# Conservative single-node defaults. ALFWorld creates one Ray actor per
+# train_batch_size * group_size plus validation envs, so aggressive rollout
+# parallelism can occupy all CPU slots before the GPU worker is scheduled.
+export TRAIN_DATA_SIZE="${TRAIN_DATA_SIZE:-8}"      # 每步 8 个任务
+export GROUP_SIZE="${GROUP_SIZE:-2}"                # 每任务 2 条 rollout -> 每步 16 条
+export VAL_DATA_SIZE="${VAL_DATA_SIZE:-4}"
+export ENV_WORKER_CPUS="${ENV_WORKER_CPUS:-0.05}"
+export RAY_NUM_CPUS="${RAY_NUM_CPUS:-$(nproc)}"
 
 # 修复 2：提高学习率 + warmup
 export ACTOR_LR="${ACTOR_LR:-1e-5}"
@@ -143,7 +148,7 @@ python3 -m examples.data_preprocess.prepare \
     --mode 'text' \
     --local_dir "$DATA_ROOT" \
     --train_data_size "$TRAIN_DATA_SIZE" \
-    --val_data_size 8
+    --val_data_size "$VAL_DATA_SIZE"
 
 # 构建训练参数
 ppo_mini_batch_size=$((TRAIN_DATA_SIZE * GROUP_SIZE))
@@ -153,7 +158,7 @@ ppo_args=(
     "data.train_files=$DATA_ROOT/text/train.parquet"
     "data.val_files=$DATA_ROOT/text/test.parquet"
     "data.train_batch_size=$TRAIN_DATA_SIZE"
-    data.val_batch_size=8
+    "data.val_batch_size=$VAL_DATA_SIZE"
     "data.max_prompt_length=$MAX_PROMPT_LENGTH"
     "data.max_response_length=$MAX_RESPONSE_LENGTH"
     data.filter_overlong_prompts=True
@@ -226,7 +231,7 @@ ppo_args=(
     "env.history_length=$HISTORY_LENGTH"
     "env.max_steps=$MAX_STEPS"
     "env.rollout.n=$GROUP_SIZE"
-    env.resources_per_worker.num_cpus=0.1
+    "env.resources_per_worker.num_cpus=$ENV_WORKER_CPUS"
     "++env.alfworld.use_dense_reward=$DENSE_REWARD"
     "++env.alfworld.train_task_type=$TRAIN_TASK_TYPE"
     "++env.alfworld.eval_task_type=$EVAL_TASK_TYPE"
@@ -277,6 +282,7 @@ ppo_args=(
     "trainer.total_epochs=$TOTAL_TRAINING_STEPS"
     "++trainer.resume_dataloader_state=$RESUME_DATALOADER_STATE"
     trainer.val_before_train=True
+    "ray_init.num_cpus=$RAY_NUM_CPUS"
 )
 
 # 保存配置
@@ -302,6 +308,9 @@ ppo_args=(
   echo "N_GPUS=$n_gpus_per_node"
   echo "TRAIN_DATA_SIZE=$TRAIN_DATA_SIZE"
   echo "GROUP_SIZE=$GROUP_SIZE"
+  echo "VAL_DATA_SIZE=$VAL_DATA_SIZE"
+  echo "ENV_WORKER_CPUS=$ENV_WORKER_CPUS"
+  echo "RAY_NUM_CPUS=$RAY_NUM_CPUS"
   echo "ROLLOUTS_PER_STEP=$((TRAIN_DATA_SIZE * GROUP_SIZE))"
   echo "ACTOR_LR=$ACTOR_LR"
   echo "LR_WARMUP_STEPS=$LR_WARMUP_STEPS"

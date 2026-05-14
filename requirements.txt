@@ -2,6 +2,7 @@
 # For the current ALFWorld + Qwen3 + vLLM + Ray deployment on A800 / CUDA 12.8,
 # prefer `requirements-skillRL.txt` and `environment-skillRL.yml`.
 accelerate
+click<8.3
 codetiming
 datasets
 dill
