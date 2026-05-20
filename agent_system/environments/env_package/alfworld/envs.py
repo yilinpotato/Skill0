@@ -63,7 +63,9 @@ class AlfworldWorker:
         self.env.seed(seed)
         self.is_train = is_train
         task_type_raw = env_kwargs.get('train_task_type' if is_train else 'eval_task_type', None)
-        if isinstance(task_type_raw, str) and ',' in task_type_raw:
+        if isinstance(task_type_raw, (list, tuple)):
+            self.task_type = list(task_type_raw)
+        elif isinstance(task_type_raw, str) and ',' in task_type_raw:
             self.task_type = [t.strip() for t in task_type_raw.split(',')]
         else:
             self.task_type = task_type_raw
