@@ -74,7 +74,7 @@ export ONPOLICY_HELPFULNESS_REMOVE_PER_ROUND="${ONPOLICY_HELPFULNESS_REMOVE_PER_
 export ONPOLICY_HELPFULNESS_MIN_ACTIVE_SKILLS="${ONPOLICY_HELPFULNESS_MIN_ACTIVE_SKILLS:-0}"
 
 # 其他训练配置
-export TOTAL_TRAINING_STEPS="${TOTAL_TRAINING_STEPS:-400}"
+export TOTAL_TRAINING_STEPS="${TOTAL_TRAINING_STEPS:-200}"
 export SAVE_FREQ="${SAVE_FREQ:-10}"
 export TEST_FREQ="${TEST_FREQ:-25}"
 export LORA_RANK="${LORA_RANK:-32}"
@@ -83,7 +83,7 @@ export MAX_STEPS="${MAX_STEPS:-40}"
 export HISTORY_LENGTH="${HISTORY_LENGTH:-20}"
 export DENSE_REWARD="${DENSE_REWARD:-True}"
 export TRAIN_TASK_TYPE="${TRAIN_TASK_TYPE:-pick_and_place}"
-export EVAL_TASK_TYPE="${EVAL_TASK_TYPE:-pick_and_place}"
+export EVAL_TASK_TYPE="${EVAL_TASK_TYPE:-pick_two_obj_and_place,look_at_obj_in_light,pick_clean_then_place_in_recep,pick_heat_then_place_in_recep,pick_cool_then_place_in_recep}"
 export INVALID_ACTION_PENALTY_COEF="${INVALID_ACTION_PENALTY_COEF:-0.05}"
 export PRINT_TRAJECTORIES="${PRINT_TRAJECTORIES:-False}"
 export WANDB_PROJECT="${WANDB_PROJECT:-skillrl_mvp}"
