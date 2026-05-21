@@ -360,8 +360,18 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
                 return  # Exit after finding the first active mask
 
     def _process_gamefile(self, gamefile, won_value, success):
-        if "pick_and_place" in gamefile and "pick_two_obj_and_place" not in gamefile:
+        if "pick_two_obj_and_place" in gamefile:
+            success["pick_two_obj_and_place_success_rate"].append(won_value)
+        elif "pick_and_place" in gamefile:
             success["pick_and_place_success_rate"].append(won_value)
+        elif "look_at_obj_in_light" in gamefile:
+            success["look_at_obj_in_light_success_rate"].append(won_value)
+        elif "pick_clean_then_place_in_recep" in gamefile:
+            success["pick_clean_then_place_in_recep_success_rate"].append(won_value)
+        elif "pick_heat_then_place_in_recep" in gamefile:
+            success["pick_heat_then_place_in_recep_success_rate"].append(won_value)
+        elif "pick_cool_then_place_in_recep" in gamefile:
+            success["pick_cool_then_place_in_recep_success_rate"].append(won_value)
 
     def save_episode_trajectories(self, batch_data_list, infos_list):
         """
