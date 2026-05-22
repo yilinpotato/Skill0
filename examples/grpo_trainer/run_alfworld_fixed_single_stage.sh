@@ -107,7 +107,7 @@ export MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-10000}"
 # Qwen3 thinking models are prompted inside an opened <think> block and often
 # need substantially more than 64 tokens to reach </think><action>...</action>.
 export MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-1024}"
-export VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-3200}"
+export VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-8192}"
 
 # A800 80GB vLLM / FSDP colocated settings.
 export VLLM_GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.70}"
