@@ -52,11 +52,11 @@ export RAY_NUM_CPUS="${RAY_NUM_CPUS:-$(nproc)}"
 
 # 修复 2：提高学习率 + warmup
 export ACTOR_LR="${ACTOR_LR:-1e-5}"
-export LR_WARMUP_STEPS="${LR_WARMUP_STEPS:-100}"
+export LR_WARMUP_STEPS="${LR_WARMUP_STEPS:-50}"
 export LR_SCHEDULER="${LR_SCHEDULER:-cosine}"
 
 # 修复 3：Entropy bonus
-export ENTROPY_COEFF="${ENTROPY_COEFF:-0.01}"
+export ENTROPY_COEFF="${ENTROPY_COEFF:-0.05}"
 
 # 修复 4：奖励归一化（当前 SkillRL 代码尚未实际读取这两个字段，仅保留为实验记录）
 export NORMALIZE_REWARD="${NORMALIZE_REWARD:-True}"
@@ -74,7 +74,7 @@ export ONPOLICY_HELPFULNESS_REMOVE_PER_ROUND="${ONPOLICY_HELPFULNESS_REMOVE_PER_
 export ONPOLICY_HELPFULNESS_MIN_ACTIVE_SKILLS="${ONPOLICY_HELPFULNESS_MIN_ACTIVE_SKILLS:-0}"
 
 # 其他训练配置
-export TOTAL_TRAINING_STEPS="${TOTAL_TRAINING_STEPS:-200}"
+export TOTAL_TRAINING_STEPS="${TOTAL_TRAINING_STEPS:-160}"
 export SAVE_FREQ="${SAVE_FREQ:-10}"
 export TEST_FREQ="${TEST_FREQ:-25}"
 export LORA_RANK="${LORA_RANK:-32}"
@@ -184,7 +184,7 @@ ppo_args=(
     "actor_rollout_ref.actor.ppo_mini_batch_size=$ppo_mini_batch_size"
     "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$PPO_MICRO_BATCH_SIZE_PER_GPU"
     actor_rollout_ref.actor.use_kl_loss=True
-    actor_rollout_ref.actor.kl_loss_coef=0.05
+    actor_rollout_ref.actor.kl_loss_coef=0.01
     actor_rollout_ref.actor.kl_loss_type=low_var_kl
 
     # Entropy bonus ⭐
