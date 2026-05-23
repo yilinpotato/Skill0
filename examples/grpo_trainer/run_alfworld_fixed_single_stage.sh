@@ -46,7 +46,7 @@ echo ""
 # parallelism can occupy all CPU slots before the GPU worker is scheduled.
 export TRAIN_DATA_SIZE="${TRAIN_DATA_SIZE:-16}"     # 每步 16 个任务
 export GROUP_SIZE="${GROUP_SIZE:-8}"                # 每任务 8 条 rollout -> 每步 128 条
-export VAL_DATA_SIZE="${VAL_DATA_SIZE:-64}"
+export VAL_DATA_SIZE="${VAL_DATA_SIZE:-128}"
 export ENV_WORKER_CPUS="${ENV_WORKER_CPUS:-0.15}"
 export RAY_NUM_CPUS="${RAY_NUM_CPUS:-$(nproc)}"
 
