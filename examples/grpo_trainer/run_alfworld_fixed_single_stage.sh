@@ -44,9 +44,9 @@ echo ""
 # Conservative single-node defaults. ALFWorld creates one Ray actor per
 # train_batch_size * group_size plus validation envs, so aggressive rollout
 # parallelism can occupy all CPU slots before the GPU worker is scheduled.
-export TRAIN_DATA_SIZE="${TRAIN_DATA_SIZE:-8}"      # 每步 8 个任务
-export GROUP_SIZE="${GROUP_SIZE:-2}"                # 每任务 2 条 rollout -> 每步 16 条
-export VAL_DATA_SIZE="${VAL_DATA_SIZE:-4}"
+export TRAIN_DATA_SIZE="${TRAIN_DATA_SIZE:-16}"     # 每步 16 个任务
+export GROUP_SIZE="${GROUP_SIZE:-8}"                # 每任务 8 条 rollout -> 每步 128 条
+export VAL_DATA_SIZE="${VAL_DATA_SIZE:-128}"
 export ENV_WORKER_CPUS="${ENV_WORKER_CPUS:-0.05}"
 export RAY_NUM_CPUS="${RAY_NUM_CPUS:-$(nproc)}"
 
