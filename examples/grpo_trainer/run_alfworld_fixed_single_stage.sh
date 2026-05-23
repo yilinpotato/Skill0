@@ -28,6 +28,13 @@ export PYTHONFAULTHANDLER="${PYTHONFAULTHANDLER:-1}"
 # incompatible with that pool and can also make GPU memory diagnosis misleading.
 unset PYTORCH_CUDA_ALLOC_CONF
 
+# Each Python/Ray worker consumes many mmaps; the default 65530 is too low for
+# large rollout parallelism and causes mmap error 12 (ENOMEM) at actor startup.
+# Without sudo, the only fix is to keep total Ray actors well below
+# max_map_count(65530) / ~300 mmaps_per_proc ≈ 218. Reserve ~80 for Ray/vLLM/FSDP
+# leaving ~130 for env actors: 16*4=64 train + 64 val = 128 total.
+sudo sysctl -w vm.max_map_count=1048576 2>/dev/null || true
+
 # ============================================================================
 # A800 80GB single GPU configuration
 # ============================================================================
@@ -46,7 +53,7 @@ echo ""
 # parallelism can occupy all CPU slots before the GPU worker is scheduled.
 export TRAIN_DATA_SIZE="${TRAIN_DATA_SIZE:-16}"     # 每步 16 个任务
 export GROUP_SIZE="${GROUP_SIZE:-8}"                # 每任务 8 条 rollout -> 每步 128 条
-export VAL_DATA_SIZE="${VAL_DATA_SIZE:-128}"
+export VAL_DATA_SIZE="${VAL_DATA_SIZE:-32}"
 export ENV_WORKER_CPUS="${ENV_WORKER_CPUS:-0.25}"
 export RAY_NUM_CPUS="${RAY_NUM_CPUS:-48}"
 
