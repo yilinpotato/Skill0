@@ -59,7 +59,7 @@ export RAY_NUM_CPUS="${RAY_NUM_CPUS:-48}"
 
 # 修复 2：提高学习率 + warmup
 export ACTOR_LR="${ACTOR_LR:-1e-5}"
-export LR_WARMUP_STEPS="${LR_WARMUP_STEPS:-50}"
+export LR_WARMUP_STEPS="${LR_WARMUP_STEPS:-10}"
 export LR_SCHEDULER="${LR_SCHEDULER:-cosine}"
 
 # 修复 3：Entropy bonus
