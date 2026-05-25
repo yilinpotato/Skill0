@@ -63,7 +63,7 @@ export LR_WARMUP_STEPS="${LR_WARMUP_STEPS:-10}"
 export LR_SCHEDULER="${LR_SCHEDULER:-cosine}"
 
 # 修复 3：Entropy bonus
-export ENTROPY_COEFF="${ENTROPY_COEFF:-0.05}"
+export ENTROPY_COEFF="${ENTROPY_COEFF:-0.03}"
 
 # 修复 4：奖励归一化（当前 SkillRL 代码尚未实际读取这两个字段，仅保留为实验记录）
 export NORMALIZE_REWARD="${NORMALIZE_REWARD:-True}"
@@ -84,6 +84,7 @@ export ONPOLICY_HELPFULNESS_MIN_ACTIVE_SKILLS="${ONPOLICY_HELPFULNESS_MIN_ACTIVE
 export TOTAL_TRAINING_STEPS="${TOTAL_TRAINING_STEPS:-160}"
 export SAVE_FREQ="${SAVE_FREQ:-10}"
 export TEST_FREQ="${TEST_FREQ:-25}"
+export RESUME_FROM_STEP="${RESUME_FROM_STEP:-}"
 export LORA_RANK="${LORA_RANK:-32}"
 export LORA_ALPHA="${LORA_ALPHA:-64}"
 export MAX_STEPS="${MAX_STEPS:-40}"
@@ -134,6 +135,29 @@ source scripts/setup_alfworld_cache.sh
 run_dir="$OUTPUT_ROOT/skillrl_mvp/$EXPERIMENT_NAME"
 mkdir -p "$run_dir"
 mkdir -p "$WANDB_DIR"
+
+resume_args=()
+if [[ -n "$RESUME_FROM_STEP" ]]; then
+  resume_ckpt="$run_dir/global_step_$RESUME_FROM_STEP"
+  if [[ ! "$RESUME_FROM_STEP" =~ ^[0-9]+$ ]]; then
+    echo "RESUME_FROM_STEP must be an integer, got: $RESUME_FROM_STEP" >&2
+    exit 1
+  fi
+  if [[ ! -d "$resume_ckpt/actor" ]]; then
+    echo "Requested checkpoint does not exist: $resume_ckpt/actor" >&2
+    echo "Available checkpoints under $run_dir:" >&2
+    find "$run_dir" -maxdepth 1 -type d -name 'global_step_*' -printf '  %f\n' 2>/dev/null | sort -V >&2 || true
+    exit 1
+  fi
+  resume_args=(
+    trainer.resume_mode=resume_path
+    "trainer.resume_from_path=$resume_ckpt"
+  )
+  echo "[resume] forcing restart from $resume_ckpt"
+else
+  echo "[resume] auto mode: will resume from latest checkpoint if present"
+fi
+
 diagnostics_dir="$run_dir/diagnostics/$(date +%Y%m%d_%H%M%S)"
 monitor_pid=""
 cleanup_monitor() {
@@ -288,6 +312,7 @@ ppo_args=(
     "trainer.total_training_steps=$TOTAL_TRAINING_STEPS"
     "trainer.total_epochs=$TOTAL_TRAINING_STEPS"
     "++trainer.resume_dataloader_state=$RESUME_DATALOADER_STATE"
+    "${resume_args[@]}"
     trainer.val_before_train=True
     "ray_init.num_cpus=$RAY_NUM_CPUS"
 )
@@ -324,6 +349,7 @@ ppo_args=(
   echo "ENTROPY_COEFF=$ENTROPY_COEFF"
   echo "NORMALIZE_REWARD=$NORMALIZE_REWARD"
   echo "TOTAL_TRAINING_STEPS=$TOTAL_TRAINING_STEPS"
+  echo "RESUME_FROM_STEP=$RESUME_FROM_STEP"
   echo "VLLM_GPU_MEMORY_UTILIZATION=$VLLM_GPU_MEMORY_UTILIZATION"
   echo "VLLM_MAX_NUM_BATCHED_TOKENS=$VLLM_MAX_NUM_BATCHED_TOKENS"
   echo "VLLM_MAX_NUM_SEQS=$VLLM_MAX_NUM_SEQS"
@@ -367,4 +393,6 @@ echo ""
 echo "断点续训："
 echo "  export EXPERIMENT_NAME=$EXPERIMENT_NAME"
 echo "  bash $0"
+echo "Force resume from a specific step, for example step 10:"
+echo "  RESUME_FROM_STEP=10 bash $0"
 echo "============================================"
