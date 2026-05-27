@@ -63,7 +63,7 @@ export LR_WARMUP_STEPS="${LR_WARMUP_STEPS:-10}"
 export LR_SCHEDULER="${LR_SCHEDULER:-cosine}"
 
 # 修复 3：Entropy bonus
-export ENTROPY_COEFF="${ENTROPY_COEFF:-0.008}"
+export ENTROPY_COEFF="${ENTROPY_COEFF:-0.005}"
 
 # 修复 4：奖励归一化（当前 SkillRL 代码尚未实际读取这两个字段，仅保留为实验记录）
 export NORMALIZE_REWARD="${NORMALIZE_REWARD:-True}"
@@ -73,8 +73,8 @@ export REWARD_CLIP="${REWARD_CLIP:-10.0}"
 export GLOBAL_TOP_K_SCHEDULE="${GLOBAL_TOP_K_SCHEDULE:-[12,12,12,8,8,8,6,6,6,4,4,4,2,2,2,0]}"
 export GLOBAL_INTERNALIZATION_MODE="${GLOBAL_INTERNALIZATION_MODE:-skillzero}"
 export SKILLZERO_INCLUDE_TASK_SPECIFIC="${SKILLZERO_INCLUDE_TASK_SPECIFIC:-True}"
-export ONPOLICY_HELPFULNESS_EVAL_ENABLED="${ONPOLICY_HELPFULNESS_EVAL_ENABLED:-False}"
-export ONPOLICY_HELPFULNESS_AUTO_INTERNALIZE="${ONPOLICY_HELPFULNESS_AUTO_INTERNALIZE:-False}"
+export ONPOLICY_HELPFULNESS_EVAL_ENABLED="${ONPOLICY_HELPFULNESS_EVAL_ENABLED:-True}"
+export ONPOLICY_HELPFULNESS_AUTO_INTERNALIZE="${ONPOLICY_HELPFULNESS_AUTO_INTERNALIZE:-True}"
 export ONPOLICY_HELPFULNESS_DELTA_THRESHOLD="${ONPOLICY_HELPFULNESS_DELTA_THRESHOLD:-0.01}"
 export ONPOLICY_HELPFULNESS_PATIENCE="${ONPOLICY_HELPFULNESS_PATIENCE:-1}"
 export ONPOLICY_HELPFULNESS_REMOVE_PER_ROUND="${ONPOLICY_HELPFULNESS_REMOVE_PER_ROUND:-1}"
@@ -215,7 +215,7 @@ ppo_args=(
     "actor_rollout_ref.actor.ppo_mini_batch_size=$ppo_mini_batch_size"
     "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$PPO_MICRO_BATCH_SIZE_PER_GPU"
     actor_rollout_ref.actor.use_kl_loss=True
-    actor_rollout_ref.actor.kl_loss_coef=0.025
+    actor_rollout_ref.actor.kl_loss_coef=0.04
     actor_rollout_ref.actor.kl_loss_type=low_var_kl
 
     # Entropy bonus ⭐
