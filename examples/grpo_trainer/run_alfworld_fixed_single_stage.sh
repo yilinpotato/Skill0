@@ -63,7 +63,7 @@ export LR_WARMUP_STEPS="${LR_WARMUP_STEPS:-10}"
 export LR_SCHEDULER="${LR_SCHEDULER:-cosine}"
 
 # 修复 3：Entropy bonus
-export ENTROPY_COEFF="${ENTROPY_COEFF:-0.015}"
+export ENTROPY_COEFF="${ENTROPY_COEFF:-0.008}"
 
 # 修复 4：奖励归一化（当前 SkillRL 代码尚未实际读取这两个字段，仅保留为实验记录）
 export NORMALIZE_REWARD="${NORMALIZE_REWARD:-True}"
@@ -215,7 +215,7 @@ ppo_args=(
     "actor_rollout_ref.actor.ppo_mini_batch_size=$ppo_mini_batch_size"
     "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$PPO_MICRO_BATCH_SIZE_PER_GPU"
     actor_rollout_ref.actor.use_kl_loss=True
-    actor_rollout_ref.actor.kl_loss_coef=0.02
+    actor_rollout_ref.actor.kl_loss_coef=0.025
     actor_rollout_ref.actor.kl_loss_type=low_var_kl
 
     # Entropy bonus ⭐
