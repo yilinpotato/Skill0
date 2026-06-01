@@ -63,7 +63,7 @@ export LR_WARMUP_STEPS="${LR_WARMUP_STEPS:-10}"
 export LR_SCHEDULER="${LR_SCHEDULER:-cosine}"
 
 # 修复 3：Entropy bonus
-export ENTROPY_COEFF="${ENTROPY_COEFF:-0.005}"
+export ENTROPY_COEFF="${ENTROPY_COEFF:-0.007}"
 
 # 修复 4：奖励归一化（当前 SkillRL 代码尚未实际读取这两个字段，仅保留为实验记录）
 export NORMALIZE_REWARD="${NORMALIZE_REWARD:-True}"
@@ -114,7 +114,7 @@ export COMPACT_CONSOLE_OUTPUT="${COMPACT_CONSOLE_OUTPUT:-True}"
 export MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-10000}"
 # Qwen3 thinking models are prompted inside an opened <think> block and often
 # need substantially more than 64 tokens to reach </think><action>...</action>.
-export MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-1024}"
+export MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-2048}"
 export VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-8192}"
 
 # A800 80GB vLLM / FSDP colocated settings.
@@ -215,7 +215,7 @@ ppo_args=(
     "actor_rollout_ref.actor.ppo_mini_batch_size=$ppo_mini_batch_size"
     "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$PPO_MICRO_BATCH_SIZE_PER_GPU"
     actor_rollout_ref.actor.use_kl_loss=True
-    actor_rollout_ref.actor.kl_loss_coef=0.04
+    actor_rollout_ref.actor.kl_loss_coef=0.035
     actor_rollout_ref.actor.kl_loss_type=low_var_kl
 
     # Entropy bonus ⭐
