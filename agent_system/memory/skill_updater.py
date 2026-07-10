@@ -142,10 +142,11 @@ class SkillUpdater:
         # Format failure examples
         failure_examples = []
         for i, traj in enumerate(failed_trajectories[:5]):
+            task_type_line = f"Task Type: {traj['task_type']}\n" if traj.get('task_type') else ""
             failure_examples.append(
                 f"\nExample {i + 1}:\n"
                 f"Task: {traj['task']}\n"
-                f"Task Type: {traj['task_type']}\n"
+                f"{task_type_line}"
                 f"Trajectory (last 5 steps):\n"
                 f"{self._format_trajectory(traj['trajectory'][-5:])}\n"
             )

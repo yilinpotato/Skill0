@@ -1378,9 +1378,13 @@ class RayPPOTrainer:
         for task_key, rate in success_rate.items():
             if rate < threshold:
                 needs_update = True
-                # 从 key 提取 task_type (e.g., "pick_and_place_success_rate" -> "pick_and_place")
-                task_type = task_key.replace('_success_rate', '')
-                low_success_tasks.append(task_type)
+                # 从 key 提取 task_type (e.g., "pick_and_place_success_rate" -> "pick_and_place").
+                # 跳过整体的 "success_rate" 键本身，以及其它非 "*_success_rate" 格式的键
+                # （例如 webshop 的 "webshop_task_score (not success_rate)"），避免把它们
+                # 当作虚假的任务类型打印出来。
+                if task_key != 'success_rate' and task_key.endswith('_success_rate'):
+                    task_type = task_key[: -len('_success_rate')]
+                    low_success_tasks.append(task_type)
 
         if not needs_update:
             print(f"[SkillUpdate] All task success rates above {threshold}, skipping update")
@@ -1400,9 +1404,18 @@ class RayPPOTrainer:
         # 初始化 SkillUpdater (lazy init, 使用 Azure OpenAI o3)
         if not hasattr(self, 'skill_updater'):
             from agent_system.memory.skill_updater import SkillUpdater
-            self.skill_updater = SkillUpdater(
-                max_new_skills_per_update=update_config.get('max_new_skills', 3),
-            )
+            try:
+                self.skill_updater = SkillUpdater(
+                    max_new_skills_per_update=update_config.get('max_new_skills', 3),
+                )
+            except EnvironmentError as e:
+                # Missing AZURE_OPENAI_API_KEY/ENDPOINT should not crash training;
+                # skip skill updates for the rest of the run instead.
+                print(f"[SkillUpdate] Disabling dynamic skill update: {e}")
+                self.skill_updater = None
+
+        if self.skill_updater is None:
+            return
 
         # 获取当前 skills
         retrieval_memory = self.val_envs.retrieval_memory
@@ -1447,10 +1460,11 @@ class RayPPOTrainer:
         scores: list,
     ) -> list:
         """收集失败的 trajectories 用于分析"""
+        is_alfworld = "alfworld" in str(self.config.env.env_name).lower()
         failed = []
         for inp, out, score in zip(inputs, outputs, scores):
             if score <= 0:  # 失败的 trajectory
-                task_type = self._detect_task_type_from_input(inp)
+                task_type = self._detect_task_type_from_input(inp) if is_alfworld else None
                 task_desc = self._extract_task_description(inp)
                 trajectory = self._parse_conversation_to_steps(inp, out)
                 failed.append({
@@ -1535,7 +1549,7 @@ class RayPPOTrainer:
         return steps
 
     def _detect_task_type_from_input(self, inp: str) -> str:
-        """从输入中检测任务类型"""
+        """从输入中检测任务类型（仅适用于 ALFWorld 的任务分类，其它环境不应调用）"""
         inp_lower = inp.lower()
         if 'clean' in inp_lower:
             return 'clean'

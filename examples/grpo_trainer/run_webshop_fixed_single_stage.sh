@@ -1,5 +1,32 @@
 #!/usr/bin/env bash
 # WebShop GRPO single-stage training for two A800 80GB GPUs.
+#
+# Reference: examples/grpo_trainer/run_webshop_skills.sh (paper setup: 8 GPUs,
+# Qwen2.5-7B already SFT'd on skills, full fine-tuning, train_data_size=16,
+# group_size=8, val_data_size=64). Values here follow that script wherever the
+# 2xA800 hardware and the different base model (Qwen3-4B-Thinking-2507,
+# intentionally kept) allow it. Deliberate deviations from the paper values,
+# and why:
+#   - LoRA (rank/alpha) instead of full fine-tuning, and both fsdp param /
+#     optimizer offload disabled: full FT of a thinking model does not fit
+#     on 2 GPUs the way it did on 8; LoRA's much smaller trainable/optimizer
+#     footprint makes the offloads the paper needed largely unnecessary.
+#   - train_data_size=12 / group_size=6 / val_data_size=32 (paper: 16/8/64):
+#     scaled down proportionally for 2 GPUs; ppo_mini_batch_size=36 keeps the
+#     paper's mini_batch/total_batch ratio of 0.5 (36/72 vs the paper's 64/128).
+#   - data.max_prompt_length=8192 / max_response_length=4096 (paper: 6000/768):
+#     Qwen3-Thinking emits a much longer <think> block than the paper's
+#     non-thinking Qwen2.5 checkpoint, so both budgets were raised accordingly.
+#   - rollout/ref micro-batch sizes, tensor_model_parallel_size=1,
+#     gpu_memory_utilization=0.8, max_num_batched_tokens=16384: re-tuned for
+#     2 GPUs + LoRA + the larger response budget above; not paper values.
+# Everything else (max_steps=15, invalid_action_penalty_coef=0.1, kl_loss_coef,
+# actor lr=1e-6, save_freq=10, test_freq=5, val_before_train=False,
+# data.truncation=left, skills_only_memory top_k) matches the paper script
+# as-is. Skill memory is configured for LOCAL, progressive internalization
+# only (global_top_k_schedule + skillzero + on-policy helpfulness pruning,
+# mirroring run_alfworld_fixed_single_stage.sh) - enable_dynamic_update (the
+# separate Azure/o3 cloud skill-generation path) is explicitly disabled.
 
 set -euo pipefail
 
@@ -50,7 +77,10 @@ echo ""
 export TRAIN_DATA_SIZE="${TRAIN_DATA_SIZE:-12}"
 export GROUP_SIZE="${GROUP_SIZE:-6}"
 export VAL_DATA_SIZE="${VAL_DATA_SIZE:-32}"
-export ENV_WORKER_CPUS="${ENV_WORKER_CPUS:-0.35}"
+# examples/grpo_trainer/run_webshop_skills.sh (paper reference) uses 0.1 per
+# env worker; WebShop's env actors are lightweight (in-process HTML parsing,
+# no browser), so there is no hardware reason to deviate from that value.
+export ENV_WORKER_CPUS="${ENV_WORKER_CPUS:-0.1}"
 export RAY_NUM_CPUS="${RAY_NUM_CPUS:-56}"
 
 export ACTOR_LR="${ACTOR_LR:-1e-6}"
@@ -60,6 +90,26 @@ export ACTOR_LR="${ACTOR_LR:-1e-6}"
 export WEBSHOP_USE_SMALL="${WEBSHOP_USE_SMALL:-True}"
 export WEBSHOP_HUMAN_GOALS="${WEBSHOP_HUMAN_GOALS:-False}"
 export MAX_STEPS="${MAX_STEPS:-15}"
+
+# Progressive skill internalization (mirrors run_alfworld_fixed_single_stage.sh):
+# the number of general/global skills injected into the prompt fades from
+# top_k down to 0 over training, forcing the policy to internalize them
+# instead of leaning on retrieved text forever. No cloud/Azure o3 calls are
+# involved in this path (that's the separate, disabled enable_dynamic_update
+# mechanism below) - it's purely a local schedule over already-authored skills.
+export GLOBAL_TOP_K_SCHEDULE="${GLOBAL_TOP_K_SCHEDULE:-[6,6,6,4,4,4,3,3,3,2,2,2,1,1,1,0]}"
+export GLOBAL_INTERNALIZATION_MODE="${GLOBAL_INTERNALIZATION_MODE:-skillzero}"
+# WebShop has no discrete task-type taxonomy the way ALFWorld does (no
+# env.alfworld.eval_task_type equivalent), so the task-specific half of
+# skillzero has nothing to act on here; left False to say so honestly rather
+# than implying a no-op knob does something.
+export SKILLZERO_INCLUDE_TASK_SPECIFIC="${SKILLZERO_INCLUDE_TASK_SPECIFIC:-False}"
+export ONPOLICY_HELPFULNESS_EVAL_ENABLED="${ONPOLICY_HELPFULNESS_EVAL_ENABLED:-True}"
+export ONPOLICY_HELPFULNESS_AUTO_INTERNALIZE="${ONPOLICY_HELPFULNESS_AUTO_INTERNALIZE:-True}"
+export ONPOLICY_HELPFULNESS_DELTA_THRESHOLD="${ONPOLICY_HELPFULNESS_DELTA_THRESHOLD:-0.01}"
+export ONPOLICY_HELPFULNESS_PATIENCE="${ONPOLICY_HELPFULNESS_PATIENCE:-1}"
+export ONPOLICY_HELPFULNESS_REMOVE_PER_ROUND="${ONPOLICY_HELPFULNESS_REMOVE_PER_ROUND:-1}"
+export ONPOLICY_HELPFULNESS_MIN_ACTIVE_SKILLS="${ONPOLICY_HELPFULNESS_MIN_ACTIVE_SKILLS:-0}"
 
 export TOTAL_TRAINING_STEPS="${TOTAL_TRAINING_STEPS:-150}"
 export SAVE_FREQ="${SAVE_FREQ:-10}"
@@ -73,7 +123,9 @@ export WANDB_PROJECT="${WANDB_PROJECT:-skillrl_mvp}"
 export WANDB_NAME="${WANDB_NAME:-$EXPERIMENT_NAME}"
 export WANDB_RUN_GROUP="${WANDB_RUN_GROUP:-webshop_fixed_single_stage_2xa800}"
 export WANDB_DIR="${WANDB_DIR:-$OUTPUT_ROOT/wandb}"
-export TRAINER_LOGGER="${TRAINER_LOGGER:-['console']}"
+# Paper reference (run_webshop_skills.sh) logs to both console and wandb;
+# restored here (this script had silently dropped wandb from the logger list).
+export TRAINER_LOGGER="${TRAINER_LOGGER:-['console','wandb']}"
 export LOG_VAL_GENERATIONS="${LOG_VAL_GENERATIONS:-0}"
 export WANDB_LOG_TRAJECTORIES="${WANDB_LOG_TRAJECTORIES:-True}"
 export WANDB_LOG_CONTEXTS="${WANDB_LOG_CONTEXTS:-True}"
@@ -92,7 +144,12 @@ export MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-4096}"
 # Dual-A800 FSDP with one independent vLLM rollout worker per GPU.
 export VLLM_GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.8}"
 export VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-16384}"
-export VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-32}"
+# Paper reference uses 256; this had been left at 32 (the ALFWorld sibling
+# script's default, apparently carried over when this script was authored).
+# max_num_seqs is a vLLM scheduling cap, not a memory reservation, so raising
+# it back to the paper value just avoids needlessly serializing concurrent
+# rollouts and does not by itself increase KV-cache/memory usage.
+export VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-256}"
 export PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-36}"
 export PPO_MICRO_BATCH_SIZE_PER_GPU="${PPO_MICRO_BATCH_SIZE_PER_GPU:-6}"
 export LOG_PROB_MICRO_BATCH_PER_GPU="${LOG_PROB_MICRO_BATCH_PER_GPU:-16}"
@@ -205,10 +262,21 @@ ppo_args=(
   ++env.use_skills_only_memory=True
   ++env.skills_only_memory.skills_json_path=memory_data/webshop/claude_style_skills.json
   ++env.skills_only_memory.top_k=6
-  ++env.skills_only_memory.enable_dynamic_update=True
-  ++env.skills_only_memory.update_skills_from_train=True
-  ++env.skills_only_memory.update_threshold=0.4
-  ++env.skills_only_memory.max_new_skills=3
+  # Progressive skill internalization only - no cloud/Azure o3 calls.
+  # enable_dynamic_update (set False below) is the *separate* o3-based
+  # skill-generation path (see SkillUpdater); intentionally left off here.
+  "++env.skills_only_memory.global_top_k_schedule=$GLOBAL_TOP_K_SCHEDULE"
+  "++env.skills_only_memory.global_internalization_mode=$GLOBAL_INTERNALIZATION_MODE"
+  "++env.skills_only_memory.skillzero_include_task_specific=$SKILLZERO_INCLUDE_TASK_SPECIFIC"
+  "++env.skills_only_memory.onpolicy_helpfulness_eval_enabled=$ONPOLICY_HELPFULNESS_EVAL_ENABLED"
+  "++env.skills_only_memory.onpolicy_helpfulness_eval_auto_internalize=$ONPOLICY_HELPFULNESS_AUTO_INTERNALIZE"
+  "++env.skills_only_memory.onpolicy_helpfulness_eval_delta_threshold=$ONPOLICY_HELPFULNESS_DELTA_THRESHOLD"
+  "++env.skills_only_memory.onpolicy_helpfulness_eval_patience=$ONPOLICY_HELPFULNESS_PATIENCE"
+  "++env.skills_only_memory.onpolicy_helpfulness_eval_remove_per_round=$ONPOLICY_HELPFULNESS_REMOVE_PER_ROUND"
+  "++env.skills_only_memory.onpolicy_helpfulness_eval_min_active_skills=$ONPOLICY_HELPFULNESS_MIN_ACTIVE_SKILLS"
+  ++env.skills_only_memory.task_specific_top_k=null
+  ++env.skills_only_memory.enable_dynamic_update=False
+  ++env.skills_only_memory.eval_internalization_modes=True
 
   trainer.critic_warmup=0
   "trainer.logger=$TRAINER_LOGGER"
@@ -230,7 +298,16 @@ ppo_args=(
   "++trainer.metrics_jsonl_path=$run_dir/metrics.jsonl"
   "++trainer.trajectory_log_path=$run_dir/trajectories.json"
   "++trainer.context_log_path=$run_dir/contexts.json"
-  ++trainer.trajectory_include_prompt=False
+  # Human-readable, step-by-step trajectory dump (observation / prompt / model
+  # reasoning / raw output / action / env result) for debugging, alongside the
+  # machine-readable trajectories.json. Needs trajectory_include_prompt=True so
+  # the "[PROMPT SENT TO MODEL]" section is actually populated. Only dumped
+  # every trajectory_log_every_n_steps training steps to keep the I/O cost of
+  # rewriting trajectories.json down over a long run; validation dumps are
+  # unaffected (already gated by trainer.test_freq).
+  "++trainer.readable_trajectory_log_path=$run_dir/trajectories_readable.txt"
+  ++trainer.trajectory_include_prompt=True
+  "++trainer.trajectory_log_every_n_steps=${TRAJECTORY_LOG_EVERY_N_STEPS:-10}"
   "++trainer.print_trajectories=$PRINT_TRAJECTORIES"
   "++trainer.compact_console_output=$COMPACT_CONSOLE_OUTPUT"
   "trainer.save_freq=$SAVE_FREQ"
@@ -248,7 +325,7 @@ ppo_args=(
   for key in MODEL_PATH PROJECT_ROOT CACHE_ROOT DATA_ROOT OUTPUT_ROOT EXPERIMENT_NAME WANDB_PROJECT WANDB_NAME WANDB_RUN_GROUP WANDB_DIR; do
     echo "$key=${!key}"
   done
-  for key in TRAIN_DATA_SIZE GROUP_SIZE VAL_DATA_SIZE ENV_WORKER_CPUS RAY_NUM_CPUS ACTOR_LR TOTAL_TRAINING_STEPS SAVE_FREQ TEST_FREQ RESUME_FROM_STEP LORA_RANK LORA_ALPHA INVALID_ACTION_PENALTY_COEF MAX_STEPS WEBSHOP_USE_SMALL WEBSHOP_HUMAN_GOALS MAX_PROMPT_LENGTH MAX_RESPONSE_LENGTH VLLM_GPU_MEMORY_UTILIZATION VLLM_MAX_NUM_BATCHED_TOKENS VLLM_MAX_NUM_SEQS VLLM_TP_SIZE PPO_MINI_BATCH_SIZE PPO_MICRO_BATCH_SIZE_PER_GPU LOG_PROB_MICRO_BATCH_PER_GPU REF_LOG_PROB_MICRO_BATCH_PER_GPU OPTIMIZER_OFFLOAD RESUME_DATALOADER_STATE; do
+  for key in TRAIN_DATA_SIZE GROUP_SIZE VAL_DATA_SIZE ENV_WORKER_CPUS RAY_NUM_CPUS ACTOR_LR TOTAL_TRAINING_STEPS SAVE_FREQ TEST_FREQ RESUME_FROM_STEP LORA_RANK LORA_ALPHA INVALID_ACTION_PENALTY_COEF MAX_STEPS WEBSHOP_USE_SMALL WEBSHOP_HUMAN_GOALS MAX_PROMPT_LENGTH MAX_RESPONSE_LENGTH VLLM_GPU_MEMORY_UTILIZATION VLLM_MAX_NUM_BATCHED_TOKENS VLLM_MAX_NUM_SEQS VLLM_TP_SIZE PPO_MINI_BATCH_SIZE PPO_MICRO_BATCH_SIZE_PER_GPU LOG_PROB_MICRO_BATCH_PER_GPU REF_LOG_PROB_MICRO_BATCH_PER_GPU OPTIMIZER_OFFLOAD RESUME_DATALOADER_STATE GLOBAL_TOP_K_SCHEDULE GLOBAL_INTERNALIZATION_MODE SKILLZERO_INCLUDE_TASK_SPECIFIC ONPOLICY_HELPFULNESS_EVAL_ENABLED ONPOLICY_HELPFULNESS_AUTO_INTERNALIZE ONPOLICY_HELPFULNESS_DELTA_THRESHOLD ONPOLICY_HELPFULNESS_PATIENCE ONPOLICY_HELPFULNESS_REMOVE_PER_ROUND ONPOLICY_HELPFULNESS_MIN_ACTIVE_SKILLS; do
     echo "$key=${!key}"
   done
   echo "N_GPUS=$n_gpus_per_node"

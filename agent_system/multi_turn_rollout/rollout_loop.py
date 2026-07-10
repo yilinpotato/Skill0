@@ -69,8 +69,31 @@ class TrajectoryCollector:
         return bool(
             self.config.trainer.get("trajectory_log_path", None)
             or self.config.trainer.get("trajectory_log_dir", None)
+            or self.config.trainer.get("readable_trajectory_log_path", None)
             or self.config.trainer.get("print_trajectories", False)
         )
+
+    def _trajectory_log_every_n_steps(self) -> int:
+        return max(1, int(self.config.trainer.get("trajectory_log_every_n_steps", 1)))
+
+    def _should_log_trajectories_this_call(self, global_step, validate: bool) -> bool:
+        """
+        Throttle debug trajectory dumps (trajectories.json,
+        trajectories_readable.txt, console print, wandb) to every
+        ``trainer.trajectory_log_every_n_steps`` training steps, so long runs
+        don't pay the read-modify-write JSON cost on every single rollout.
+        Validation calls are left untouched since those already run only
+        every ``trainer.test_freq`` steps.
+        """
+        if validate:
+            return True
+        every_n = self._trajectory_log_every_n_steps()
+        if every_n <= 1 or global_step is None:
+            return True
+        try:
+            return int(global_step) % every_n == 0
+        except (TypeError, ValueError):
+            return True
 
     def _compact_console_output_enabled(self):
         return bool(self.config.trainer.get("compact_console_output", False))
@@ -373,15 +396,85 @@ class TrajectoryCollector:
             json.dump(existing, f, ensure_ascii=False, indent=2)
             f.write("\n")
 
+    def _readable_trajectory_log_path(self):
+        path = self.config.trainer.get("readable_trajectory_log_path", None)
+        if path:
+            return path
+        log_dir = self.config.trainer.get("trajectory_log_dir", None)
+        if not log_dir:
+            return None
+        return os.path.join(log_dir, "trajectories_readable.txt")
+
+    @staticmethod
+    def _fmt_num(value, digits: int = 2) -> str:
+        if value is None:
+            return "N/A"
+        try:
+            return f"{float(value):.{digits}f}"
+        except (TypeError, ValueError):
+            return str(value)
+
+    def _format_trajectory_readable(self, trajectory, index: int) -> str:
+        """
+        Render one trajectory as a step-by-step, human-readable block for
+        debugging (observation / prompt / model reasoning / raw output /
+        action / env result per step), instead of a raw JSON dump.
+        """
+        steps = trajectory.get("steps", [])
+        last_step = steps[-1] if steps else {}
+        won = bool(last_step.get("won")) if last_step.get("won") is not None else bool(
+            trajectory.get("success_rate", 0)
+        )
+        outcome = "SUCCESS" if won else "FAILURE"
+        task_score = last_step.get("task_score")
+        num_steps = trajectory.get("episode_length", len(steps))
+
+        lines = [
+            "=" * 80,
+            f"Episode {index + 1} | outcome: {outcome} (won={won}, "
+            f"task_score={self._fmt_num(task_score)}) | steps={num_steps}",
+            f"Task: {trajectory.get('task')}",
+            "=" * 80,
+        ]
+
+        for step in steps:
+            lines.append("")
+            lines.append(f"----- Step {step.get('step')} -----")
+            lines.append("[OBSERVATION]")
+            lines.append(str(step.get("observation")))
+            if "prompt" in step:
+                lines.append("")
+                lines.append("[PROMPT SENT TO MODEL]")
+                lines.append(str(step.get("prompt")))
+            lines.append("")
+            lines.append("[MODEL REASONING] (<think>...</think> content)")
+            lines.append(str(step.get("think")))
+            lines.append("")
+            lines.append("[MODEL RAW OUTPUT]")
+            lines.append(str(step.get("raw_response")))
+            lines.append("")
+            lines.append(
+                f"[ACTION TAKEN] {step.get('action_text')}   (valid: {step.get('is_action_valid')})"
+            )
+            lines.append("")
+            lines.append(
+                f"[ENV RESULT] reward={self._fmt_num(step.get('reward'))}  "
+                f"task_score={self._fmt_num(step.get('task_score'))}  "
+                f"done={step.get('done')}"
+            )
+
+        lines.append("")
+        return "\n".join(lines)
+
     def _dump_trajectories(self, trajectories, *, validate: bool = False):
         if not trajectories:
             return
 
         if self.config.trainer.get("print_trajectories", False):
-            for trajectory in trajectories:
-                print("[Trajectory]")
-                print(json.dumps(trajectory, ensure_ascii=False, indent=2))
-                print(PICK_AND_PLACE_CORRECT_FORM)
+            for i, trajectory in enumerate(trajectories):
+                print(self._format_trajectory_readable(trajectory, i), flush=True)
+                if "pick_and_place_correct_form" in trajectory:
+                    print(trajectory["pick_and_place_correct_form"])
 
         log_path = self._trajectory_log_path()
         if log_path:
@@ -398,6 +491,16 @@ class TrajectoryCollector:
             with open(log_path, "w", encoding="utf-8") as f:
                 json.dump(existing, f, ensure_ascii=False, indent=2)
                 f.write("\n")
+
+        readable_log_path = self._readable_trajectory_log_path()
+        if readable_log_path:
+            readable_dir = os.path.dirname(readable_log_path)
+            if readable_dir:
+                os.makedirs(readable_dir, exist_ok=True)
+            with open(readable_log_path, "a", encoding="utf-8") as f:
+                for i, trajectory in enumerate(trajectories):
+                    f.write(self._format_trajectory_readable(trajectory, i))
+                    f.write("\n")
 
         self._log_trajectories_to_wandb(trajectories, validate=validate)
         self._log_contexts_to_wandb(trajectories, validate=validate)
@@ -696,25 +799,31 @@ class TrajectoryCollector:
         tool_callings = np.zeros(batch_size, dtype=np.float32)
         valid_action_counts = np.zeros(batch_size, dtype=np.float32)
         active_action_counts = np.zeros(batch_size, dtype=np.float32)
+        is_alfworld = "alfworld" in str(self.config.env.env_name).lower()
+        _global_step = gen_batch.meta_info.get("global_step", None)
+        _validate = bool(gen_batch.meta_info.get("validate", False))
         trajectory_records = [
             {
-                "global_step": self._json_safe(gen_batch.meta_info.get("global_step", None)),
+                "global_step": self._json_safe(_global_step),
                 "trajectory_index": i,
                 "uid": None,
                 "traj_uid": traj_uid[i],
                 "task": getattr(envs, "tasks", [None] * batch_size)[i],
-                "gamefile": reset_infos[i].get("extra.gamefile") if i < len(reset_infos) else None,
+                "gamefile": reset_infos[i].get("extra.gamefile") if (is_alfworld and i < len(reset_infos)) else None,
                 "task_type": None,
                 "prompt_text": None,
                 "contexts": [],
-                "pick_and_place_correct_form": PICK_AND_PLACE_CORRECT_FORM,
                 "steps": [],
             }
             for i in range(batch_size)
-        ] if self._trajectory_logging_enabled() else None
+        ] if (
+            self._trajectory_logging_enabled()
+            and self._should_log_trajectories_this_call(_global_step, _validate)
+        ) else None
 
-        if trajectory_records is not None:
+        if trajectory_records is not None and is_alfworld:
             for i, record in enumerate(trajectory_records):
+                record["pick_and_place_correct_form"] = PICK_AND_PLACE_CORRECT_FORM
                 gamefile = record["gamefile"] or ""
                 record["task_type"] = "pick_and_place" if (
                     "pick_and_place" in gamefile and "pick_two_obj_and_place" not in gamefile
@@ -814,6 +923,7 @@ class TrajectoryCollector:
                         "env_action": self._json_safe(info_i.get("env_action", None)),
                         "is_action_valid": self._json_safe(info_i.get("is_action_valid", None)),
                         "reward": self._json_safe(torch_to_numpy(rewards)[i]),
+                        "task_score": self._json_safe(info_i.get("task_score", None)),
                         "done": self._json_safe(dones[i]),
                         "won": self._json_safe(info_i.get("won", None)),
                         "goal_condition_success_rate": self._json_safe(
