@@ -305,12 +305,14 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
             # exclude 'help' in admissible_actions[i]
             reformatted_admissible_actions = "\n ".join(f"'{s}'" for s in admissible_actions[i] if s != 'help')
 
-            # Use retrieval memory template if enabled
+            # Use retrieval memory template if enabled. By default the first
+            # ALFWorld prompt stays compact; evaluation scripts can opt into
+            # showing skills from step 1 with env.skills_memory_on_init.
             use_retrieval = (self.retrieval_memory is not None and
                            self.retrieved_memories is not None and
-                           not init)
+                           (not init or self.config.env.get('skills_memory_on_init', False)))
 
-            if init or self.config.env.history_length <= 0:
+            if init and not use_retrieval:
                 obs = ALFWORLD_TEMPLATE_NO_HIS.format(
                     current_observation=text_obs[i],
                     admissible_actions=reformatted_admissible_actions
@@ -324,8 +326,8 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
                     task_description=self.tasks[i],
                     retrieved_memories=memory_context,
                     step_count=len(self.memory[i]),
-                    history_length=valid_lens[i],
-                    action_history=memory_contexts[i],
+                    history_length=0 if init else valid_lens[i],
+                    action_history="None" if init else memory_contexts[i],
                     current_step=len(self.memory[i]) + 1,
                     current_observation=text_obs[i],
                     admissible_actions=reformatted_admissible_actions
@@ -360,18 +362,8 @@ class AlfWorldEnvironmentManager(EnvironmentManagerBase):
                 return  # Exit after finding the first active mask
 
     def _process_gamefile(self, gamefile, won_value, success):
-        if "pick_two_obj_and_place" in gamefile:
-            success["pick_two_obj_and_place_success_rate"].append(won_value)
-        elif "pick_and_place" in gamefile:
+        if "pick_and_place" in gamefile and "pick_two_obj_and_place" not in gamefile:
             success["pick_and_place_success_rate"].append(won_value)
-        elif "look_at_obj_in_light" in gamefile:
-            success["look_at_obj_in_light_success_rate"].append(won_value)
-        elif "pick_clean_then_place_in_recep" in gamefile:
-            success["pick_clean_then_place_in_recep_success_rate"].append(won_value)
-        elif "pick_heat_then_place_in_recep" in gamefile:
-            success["pick_heat_then_place_in_recep_success_rate"].append(won_value)
-        elif "pick_cool_then_place_in_recep" in gamefile:
-            success["pick_cool_then_place_in_recep_success_rate"].append(won_value)
 
     def save_episode_trajectories(self, batch_data_list, infos_list):
         """
@@ -605,8 +597,6 @@ class WebshopEnvironmentManager(EnvironmentManagerBase):
         # add action_valid to infos
         for i, info in enumerate(infos):
             info['is_action_valid'] = to_numpy(valids[i])
-            info['raw_model_action'] = text_actions[i]
-            info['env_action'] = actions[i]
 
         rewards = to_numpy(rewards)
         dones = to_numpy(dones)
@@ -703,7 +693,7 @@ class WebshopEnvironmentManager(EnvironmentManagerBase):
                     current_observation=text_obs[i],
                     available_actions=reformatted_available_actions
                 )
-            if len(obs) > 13000:
+            if len(obs) > 24000:
                 print(f"Warning len(obs)={len(obs)} is too long")
                 obs = WEBSHOP_TEMPLATE_NO_HIS.format(
                     task_description=self.tasks[i],

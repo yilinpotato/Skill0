@@ -40,15 +40,18 @@ class SkillsOnlyMemory(BaseMemory):
     Retrieval mode is controlled by the ``retrieval_mode`` constructor argument:
 
     * ``"template"`` (default) – keyword matching selects the task category;
-      *all* task-specific skills for that category are returned, and the first
-      ``top_k`` general skills are returned in document order.  No embedding
-      model is needed.
+      skills are ranked by when_to_apply overlap with current observation.
 
-    * ``"embedding"`` – the task description is encoded with a
-      SentenceTransformer model (Qwen3-Embedding-0.6B by default).  Both
-      general skills and task-specific skills (searched across **all**
-      categories) are ranked by cosine similarity and the top-k are returned.
-      Skill embeddings are pre-computed once and cached in memory.
+    * ``"embedding"`` – semantic ranking via SentenceTransformer embeddings.
+
+    * ``"llm"`` – an LLM (OpenAI-compatible endpoint) reads the full skill menu
+      and selects the most relevant skill IDs given the current task + observation.
+      Defaults to the same model used for SFT (Qwen3-4B-Thinking-2507) served
+      via local vLLM.  Configurable via env vars:
+        SKILL_LLM_BASE_URL  – endpoint, default http://localhost:8000/v1
+        SKILL_LLM_API_KEY   – API key, default "EMPTY" (vLLM ignores it)
+        SKILL_LLM_MODEL     – model name, default "Qwen3-4B-Thinking-2507"
+      Falls back to template mode on any API error.
     """
 
     # ------------------------------------------------------------------ #
@@ -64,6 +67,7 @@ class SkillsOnlyMemory(BaseMemory):
         global_skill_top_k: Optional[int] = None,
         global_skill_active_ids: Optional[List[str]] = None,
         task_specific_skill_active_ids: Optional[Dict[str, List[str]]] = None,
+        llm_model: Optional[str] = None,
     ):
         """
         Args:
@@ -91,9 +95,9 @@ class SkillsOnlyMemory(BaseMemory):
                                   Optional explicit allow-list of task-specific
                                   skill IDs per task type.
         """
-        if retrieval_mode not in ("template", "embedding"):
+        if retrieval_mode not in ("template", "embedding", "llm"):
             raise ValueError(
-                f"retrieval_mode must be 'template' or 'embedding', got '{retrieval_mode}'"
+                f"retrieval_mode must be 'template', 'embedding', or 'llm', got '{retrieval_mode}'"
             )
 
         if not os.path.exists(skills_json_path):
@@ -117,6 +121,10 @@ class SkillsOnlyMemory(BaseMemory):
         self._embedding_model = None
         self._skill_embeddings_cache: Optional[Dict] = None
 
+        # LLM client (only used in llm mode)
+        self._llm_client = None
+        self._llm_model = llm_model or os.environ.get("SKILL_LLM_MODEL", "Qwen3-4B-Thinking-2507")
+
         n_general = len(self.skills.get('general_skills', []))
         n_task = sum(len(v) for v in self.skills.get('task_specific_skills', {}).values())
         n_mistakes = len(self.skills.get('common_mistakes', []))
@@ -126,8 +134,6 @@ class SkillsOnlyMemory(BaseMemory):
             f"| retrieval_mode={retrieval_mode} | global_skill_top_k={global_skill_top_k}"
         )
 
-        # In embedding mode, pre-compute skill embeddings eagerly so the first
-        # retrieve() call is not slower than subsequent ones.
         if retrieval_mode == "embedding":
             self._compute_skill_embeddings()
 
@@ -136,12 +142,7 @@ class SkillsOnlyMemory(BaseMemory):
     # ------------------------------------------------------------------ #
 
     def _detect_task_type(self, task_description: str) -> str:
-        """
-        Infer the task category from ``task_description`` using keyword rules.
-
-        Auto-detects whether the loaded skills belong to ALFWorld or WebShop
-        by inspecting the task-specific skill keys.
-        """
+        """Infer task category from task_description using keyword rules."""
         task_specific = self.skills.get('task_specific_skills', {})
         goal = task_description.lower()
 
@@ -198,6 +199,56 @@ class SkillsOnlyMemory(BaseMemory):
         # ---- Fallback: first key in task_specific_skills, or 'unknown' --
         else:
             return next(iter(task_specific), 'unknown')
+
+    # ------------------------------------------------------------------ #
+    # Keyword-overlap scoring for on-demand retrieval (template mode)     #
+    # ------------------------------------------------------------------ #
+
+    _STOPWORDS = frozenset({
+        'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+        'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+        'should', 'may', 'might', 'shall', 'can', 'to', 'of', 'in', 'on',
+        'at', 'by', 'for', 'with', 'about', 'as', 'into', 'through', 'during',
+        'before', 'after', 'above', 'below', 'from', 'up', 'down', 'out',
+        'off', 'over', 'under', 'again', 'then', 'once', 'and', 'or', 'but',
+        'if', 'while', 'that', 'this', 'it', 'its', 'not', 'no', 'any',
+        'all', 'each', 'every', 'both', 'few', 'more', 'most', 'other',
+        'such', 'same', 'so', 'than', 'too', 'very', 'just', 'when', 'where',
+        'which', 'who', 'how', 'what', 'there', 'their', 'they', 'them',
+    })
+
+    @classmethod
+    def _tokenize(cls, text: str) -> set:
+        import re
+        tokens = re.findall(r'[a-z]+', text.lower())
+        return {t for t in tokens if t not in cls._STOPWORDS and len(t) > 2}
+
+    def _score_skill(self, skill: dict, query_tokens: set) -> float:
+        """Score a skill by keyword overlap between query and when_to_apply + title."""
+        when = skill.get('when_to_apply', '')
+        title = skill.get('title', '')
+        skill_tokens = self._tokenize(when + ' ' + title)
+        if not skill_tokens:
+            return 0.0
+        overlap = len(query_tokens & skill_tokens)
+        # Jaccard-like: overlap / union, but weighted toward query coverage
+        return overlap / (len(query_tokens) + len(skill_tokens) - overlap + 1e-9)
+
+    def _on_demand_retrieve(
+        self,
+        context: str,
+        candidates: list,
+        top_k: int,
+    ) -> list:
+        """Return top_k skills from candidates ranked by overlap with context."""
+        if not candidates or top_k <= 0:
+            return []
+        query_tokens = self._tokenize(context)
+        if not query_tokens:
+            return candidates[:top_k]
+        scored = [(self._score_skill(s, query_tokens), i, s) for i, s in enumerate(candidates)]
+        scored.sort(key=lambda x: (-x[0], x[1]))
+        return [s for _, _, s in scored[:top_k]]
 
     # ------------------------------------------------------------------ #
     # Embedding helpers                                                    #
@@ -319,6 +370,75 @@ class SkillsOnlyMemory(BaseMemory):
         task_idx = np.argsort(task_sims)[::-1][:top_k_task_specific]
         task_skills = [cache['items'][n_general + int(i)][2] for i in task_idx]
 
+        return general_skills, task_skills
+
+    # ------------------------------------------------------------------ #
+    # LLM-based retrieval                                                  #
+    # ------------------------------------------------------------------ #
+
+    def _get_llm_client(self):
+        if self._llm_client is None:
+            from openai import OpenAI
+            base_url = os.environ.get(
+                "SKILL_LLM_BASE_URL",
+                "http://localhost:8000/v1",  # default: local vLLM serving the SFT model
+            )
+            api_key = os.environ.get("SKILL_LLM_API_KEY", "EMPTY")
+            self._llm_client = OpenAI(api_key=api_key, base_url=base_url)
+        return self._llm_client
+
+    def _build_skill_menu(self) -> tuple[str, Dict[str, dict]]:
+        """Return a compact skill menu string and an id->skill lookup dict."""
+        lookup: Dict[str, dict] = {}
+        lines = []
+        for s in self.skills.get('general_skills', []):
+            sid = s.get('skill_id', '')
+            lookup[sid] = s
+            lines.append(f"[{sid}] (general) {s.get('title','')} — {s.get('when_to_apply','')}")
+        for task_type, skills in self.skills.get('task_specific_skills', {}).items():
+            for s in skills:
+                sid = s.get('skill_id', '')
+                lookup[sid] = s
+                lines.append(f"[{sid}] ({task_type}) {s.get('title','')} — {s.get('when_to_apply','')}")
+        return "\n".join(lines), lookup
+
+    def _llm_retrieve(
+        self,
+        task_description: str,
+        current_observation: str,
+        top_k_general: int,
+        top_k_task_specific: int,
+    ) -> tuple[list, list]:
+        """Ask the LLM to select the most relevant skill IDs, return (general, task_specific)."""
+        menu, lookup = self._build_skill_menu()
+        prompt = (
+            f"Task: {task_description}\n"
+            f"Current observation: {current_observation}\n\n"
+            f"Available skills (id — when to apply):\n{menu}\n\n"
+            f"Select up to {top_k_general} general skills and up to {top_k_task_specific} "
+            f"task-specific skills that are most relevant RIGHT NOW.\n"
+            f"Reply with ONLY a JSON object: "
+            f'{{\"general\": [\"id1\", ...], \"task_specific\": [\"id1\", ...]}}'
+        )
+        try:
+            client = self._get_llm_client()
+            resp = client.chat.completions.create(
+                model=self._llm_model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=256,
+                temperature=0.0,
+            )
+            raw = resp.choices[0].message.content.strip()
+            # extract JSON even if wrapped in markdown
+            import re
+            m = re.search(r'\{.*\}', raw, re.DOTALL)
+            selected = json.loads(m.group()) if m else {}
+        except Exception as e:
+            print(f"[SkillsOnlyMemory] LLM retrieval failed ({e}), falling back to template")
+            return None, None  # caller will fall back
+
+        general_skills = [lookup[sid] for sid in selected.get('general', []) if sid in lookup]
+        task_skills = [lookup[sid] for sid in selected.get('task_specific', []) if sid in lookup]
         return general_skills, task_skills
 
     def set_global_skill_top_k(self, top_k: Optional[int]):
@@ -460,17 +580,19 @@ class SkillsOnlyMemory(BaseMemory):
         self,
         task_description: str,
         top_k: int = 6,
+        current_observation: Optional[str] = None,
         **kwargs,
     ) -> Dict[str, Any]:
         """
         Retrieve skills for a given task description.
 
         Args:
-            task_description: Current task goal string.
-            top_k:            Number of *general* skills to include.
-                              In embedding mode this also serves as the
-                              default for task-specific skills when
-                              ``task_specific_top_k`` is not set.
+            task_description:    Current task goal string.
+            top_k:               Number of general skills to include.
+            current_observation: Current env observation text (template mode only).
+                                 When provided, skills are ranked by keyword overlap
+                                 with ``when_to_apply`` against this context rather
+                                 than returned in document order.
 
         Returns:
             Dictionary with keys:
@@ -498,7 +620,6 @@ class SkillsOnlyMemory(BaseMemory):
                 top_k_task_specific=ts_top_k,
             )
             general_skills = self._filter_active_global_skills(general_skills)[:effective_global_top_k]
-            # Still detect task type for bookkeeping / formatting labels
             task_type = self._detect_task_type(task_description)
             return {
                 'general_skills': general_skills,
@@ -511,32 +632,60 @@ class SkillsOnlyMemory(BaseMemory):
             }
 
         # ----------------------------------------------------------------
-        # Template mode: keyword detection + return (sub)set of category skills
+        # LLM mode: ask the model to select skill IDs from the full menu
+        # ----------------------------------------------------------------
+        if self.retrieval_mode == "llm":
+            ts_top_k = self.task_specific_top_k if self.task_specific_top_k is not None else top_k
+            obs = current_observation or task_description
+            general_skills, task_skills = self._llm_retrieve(
+                task_description=task_description,
+                current_observation=obs,
+                top_k_general=effective_global_top_k,
+                top_k_task_specific=ts_top_k,
+            )
+            if general_skills is not None:  # None means API error → fall through to template
+                general_skills = self._filter_active_global_skills(general_skills)[:effective_global_top_k]
+                task_type = self._detect_task_type(task_description)
+                return {
+                    'general_skills': general_skills,
+                    'task_specific_skills': task_skills,
+                    'mistakes_to_avoid': common_mistakes,
+                    'task_type': task_type,
+                    'task_specific_examples': [],
+                    'retrieval_mode': 'llm',
+                    'global_skill_top_k': effective_global_top_k,
+                }
+
+        # ----------------------------------------------------------------
+        # Template mode: keyword detection + on-demand scoring by
+        # when_to_apply overlap with current_observation (or task_description)
         # ----------------------------------------------------------------
         task_type = self._detect_task_type(task_description)
 
-        # Dynamic skills (dyn_NNN) are appended to the *end* of general_skills,
-        # so a naive [:top_k] slice would silently drop all of them once the
-        # static skill bank is larger than top_k.  Fix: always include every
-        # dynamic skill, then fill the remaining budget with static skills.
+        # Context for on-demand scoring: prefer live observation, fall back to goal
+        scoring_context = (current_observation or '') + ' ' + task_description
+
+        # General skills: always include dynamic skills, then score the rest
         all_general = self.skills.get('general_skills', [])
         dynamic_skills = [s for s in all_general if s.get('skill_id', '').startswith('dyn_')]
         static_skills = [s for s in all_general if not s.get('skill_id', '').startswith('dyn_')]
+
         if effective_global_top_k <= 0:
             general_skills = []
-        elif self.global_skill_active_ids is not None:
-            general_skills = self._filter_active_global_skills(dynamic_skills + static_skills)[:effective_global_top_k]
         else:
-            n_static = max(0, effective_global_top_k - len(dynamic_skills))
-            general_skills = (dynamic_skills + static_skills[:n_static])[:effective_global_top_k]
+            candidate_general = dynamic_skills + static_skills
+            if self.global_skill_active_ids is not None:
+                candidate_general = self._filter_active_global_skills(candidate_general)
+            # On-demand: rank by when_to_apply overlap with current context
+            general_skills = self._on_demand_retrieve(
+                scoring_context, candidate_general, effective_global_top_k
+            )
 
+        # Task-specific skills: score all candidates for this task type
         all_task_skills = self.skills.get('task_specific_skills', {}).get(task_type, [])
-
         filtered_task_skills = self._filter_active_task_specific_skills(task_type, all_task_skills)
-        if self.task_specific_top_k is not None:
-            task_skills = filtered_task_skills[:self.task_specific_top_k]
-        else:
-            task_skills = filtered_task_skills  # original behaviour: return all
+        ts_budget = self.task_specific_top_k if self.task_specific_top_k is not None else len(filtered_task_skills)
+        task_skills = self._on_demand_retrieve(scoring_context, filtered_task_skills, ts_budget)
 
         return {
             'general_skills': general_skills,
