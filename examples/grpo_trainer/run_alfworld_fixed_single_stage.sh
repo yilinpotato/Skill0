@@ -81,14 +81,14 @@ export ONPOLICY_HELPFULNESS_REMOVE_PER_ROUND="${ONPOLICY_HELPFULNESS_REMOVE_PER_
 export ONPOLICY_HELPFULNESS_MIN_ACTIVE_SKILLS="${ONPOLICY_HELPFULNESS_MIN_ACTIVE_SKILLS:-0}"
 
 # 其他训练配置
-export TOTAL_TRAINING_STEPS="${TOTAL_TRAINING_STEPS:-160}"
+export TOTAL_TRAINING_STEPS="${TOTAL_TRAINING_STEPS:-100}"
 export SAVE_FREQ="${SAVE_FREQ:-10}"
 export TEST_FREQ="${TEST_FREQ:-25}"
 export RESUME_FROM_STEP="${RESUME_FROM_STEP:-}"
 export LORA_RANK="${LORA_RANK:-32}"
 export LORA_ALPHA="${LORA_ALPHA:-64}"
 export MAX_STEPS="${MAX_STEPS:-40}"
-export HISTORY_LENGTH="${HISTORY_LENGTH:-20}"
+export HISTORY_LENGTH="${HISTORY_LENGTH:-8}"
 export DENSE_REWARD="${DENSE_REWARD:-True}"
 export TRAIN_TASK_TYPE="${TRAIN_TASK_TYPE:-[pick_two_obj_and_place,look_at_obj_in_light,pick_clean_then_place_in_recep,pick_heat_then_place_in_recep,pick_cool_then_place_in_recep]}"
 export EVAL_TASK_TYPE="${EVAL_TASK_TYPE:-[pick_two_obj_and_place,look_at_obj_in_light,pick_clean_then_place_in_recep,pick_heat_then_place_in_recep,pick_cool_then_place_in_recep]}"
