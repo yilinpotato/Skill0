@@ -43,12 +43,47 @@ export VLLM_ATTENTION_BACKEND="${VLLM_ATTENTION_BACKEND:-FLASH_ATTN}"
 export RAY_BACKEND_LOG_LEVEL="${RAY_BACKEND_LOG_LEVEL:-debug}"
 export VLLM_LOGGING_LEVEL="${VLLM_LOGGING_LEVEL:-DEBUG}"
 export PROJECT_ROOT="${PROJECT_ROOT:-$REPO_ROOT}"
-export CACHE_ROOT="${CACHE_ROOT:-/GLOBALFS/hit_wxia_1/.cache}"
+
+# ── 自动判断运行环境：超算 vs 本地3090（与 ALFWorld 启动脚本一致）──────────────
+if [[ -d /GLOBALFS/hit_wxia_1 ]]; then
+  RUN_ENV="超算 (supercomputer)"
+  export CACHE_ROOT="${CACHE_ROOT:-/GLOBALFS/hit_wxia_1/.cache}"
+  export DATA_ROOT="${DATA_ROOT:-$HOME/data/verl-agent}"
+  export OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/outputs}"
+  DEFAULT_RAY_NUM_CPUS=56
+else
+  RUN_ENV="本地3090 (local)"
+  export CACHE_ROOT="${CACHE_ROOT:-$HOME/.cache}"
+  export DATA_ROOT="${DATA_ROOT:-$PROJECT_ROOT/skillrl_data/verl-agent}"
+  export OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/skillrl_outputs}"
+  DEFAULT_RAY_NUM_CPUS="$(nproc)"
+fi
+
+# Respect user GPU selection; otherwise use at most two GPUs on the server and
+# the single available GPU on a local 3090 machine.
+if [[ -n "${GPUS:-}" && -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+  export CUDA_VISIBLE_DEVICES="$GPUS"
+elif [[ -n "${GPU:-}" && -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+  export CUDA_VISIBLE_DEVICES="$GPU"
+fi
+if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
+  NUM_VISIBLE_GPUS=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | grep -c .)
+else
+  NUM_VISIBLE_GPUS=$(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null | grep -c . || true)
+  if [[ "${NUM_VISIBLE_GPUS:-0}" -ge 2 ]]; then
+    export CUDA_VISIBLE_DEVICES="0,1"
+    NUM_VISIBLE_GPUS=2
+  elif [[ "${NUM_VISIBLE_GPUS:-0}" -eq 1 ]]; then
+    export CUDA_VISIBLE_DEVICES="0"
+  else
+    NUM_VISIBLE_GPUS=1
+  fi
+fi
+NUM_VISIBLE_GPUS=${NUM_VISIBLE_GPUS:-1}
+[[ "$NUM_VISIBLE_GPUS" -lt 1 ]] && NUM_VISIBLE_GPUS=1
+
 export MODEL_PATH="${MODEL_PATH:-$CACHE_ROOT/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507}"
-export DATA_ROOT="${DATA_ROOT:-$PROJECT_ROOT/skillrl_data/verl-agent}"
-export OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/skillrl_outputs}"
 export EXPERIMENT_NAME="${EXPERIMENT_NAME:-webshop_qwen3_4b_thinking_2xa800_v7}"
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
 export RAY_memory_usage_threshold="${RAY_memory_usage_threshold:-0.99}"
 export PYTHONFAULTHANDLER="${PYTHONFAULTHANDLER:-1}"
 
@@ -61,14 +96,17 @@ unset PYTORCH_CUDA_ALLOC_CONF
 sudo sysctl -w vm.max_map_count=1048576 2>/dev/null || true
 
 # ============================================================================
-# Dual A800 80GB configuration
+# GPU configuration: automatically 2 GPUs on the supercomputer, 1 on local 3090.
 # ============================================================================
-n_gpus_per_node=2
+n_gpus_per_node="${N_GPUS_PER_NODE:-$NUM_VISIBLE_GPUS}"
 
 echo "============================================"
-echo "WebShop GRPO training (2 x A800 80GB)"
+echo "WebShop GRPO training: $RUN_ENV"
 echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
 echo "Detected GPU count: $n_gpus_per_node"
+echo "CACHE_ROOT: $CACHE_ROOT"
+echo "DATA_ROOT: $DATA_ROOT"
+echo "OUTPUT_ROOT: $OUTPUT_ROOT"
 echo "============================================"
 echo ""
 
@@ -81,7 +119,7 @@ export VAL_DATA_SIZE="${VAL_DATA_SIZE:-32}"
 # env worker; WebShop's env actors are lightweight (in-process HTML parsing,
 # no browser), so there is no hardware reason to deviate from that value.
 export ENV_WORKER_CPUS="${ENV_WORKER_CPUS:-0.1}"
-export RAY_NUM_CPUS="${RAY_NUM_CPUS:-56}"
+export RAY_NUM_CPUS="${RAY_NUM_CPUS:-$DEFAULT_RAY_NUM_CPUS}"
 
 export ACTOR_LR="${ACTOR_LR:-1e-6}"
 
@@ -254,6 +292,7 @@ ppo_args=(
   env.env_name=Webshop
   env.seed=0
   "env.max_steps=$MAX_STEPS"
+  env.history_length=8
   "env.rollout.n=$GROUP_SIZE"
   "env.resources_per_worker.num_cpus=$ENV_WORKER_CPUS"
   "++env.webshop.use_small=$WEBSHOP_USE_SMALL"
