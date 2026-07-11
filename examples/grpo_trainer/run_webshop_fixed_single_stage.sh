@@ -184,11 +184,14 @@ export VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-16384}"
 # it back to the paper value just avoids needlessly serializing concurrent
 # rollouts and does not by itself increase KV-cache/memory usage.
 export VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-256}"
-export PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-36}"
-export PPO_MICRO_BATCH_SIZE_PER_GPU="${PPO_MICRO_BATCH_SIZE_PER_GPU:-6}"
-export LOG_PROB_MICRO_BATCH_PER_GPU="${LOG_PROB_MICRO_BATCH_PER_GPU:-16}"
-export REF_LOG_PROB_MICRO_BATCH_PER_GPU="${REF_LOG_PROB_MICRO_BATCH_PER_GPU:-8}"
-export OPTIMIZER_OFFLOAD="${OPTIMIZER_OFFLOAD:-False}"
+# 4,096-token WebShop rollouts need a smaller per-GPU backward micro-batch on
+# two A800s. Keep the 72-trajectory rollout, but trade throughput for memory.
+export PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-12}"
+export PPO_MICRO_BATCH_SIZE_PER_GPU="${PPO_MICRO_BATCH_SIZE_PER_GPU:-2}"
+export LOG_PROB_MICRO_BATCH_PER_GPU="${LOG_PROB_MICRO_BATCH_PER_GPU:-4}"
+export REF_LOG_PROB_MICRO_BATCH_PER_GPU="${REF_LOG_PROB_MICRO_BATCH_PER_GPU:-4}"
+export PARAM_OFFLOAD="${PARAM_OFFLOAD:-True}"
+export OPTIMIZER_OFFLOAD="${OPTIMIZER_OFFLOAD:-True}"
 export VLLM_TP_SIZE="${VLLM_TP_SIZE:-1}"
 export RESUME_DATALOADER_STATE="${RESUME_DATALOADER_STATE:-False}"
 export ENABLE_RESOURCE_MONITOR="${ENABLE_RESOURCE_MONITOR:-1}"
@@ -264,7 +267,7 @@ ppo_args=(
   actor_rollout_ref.actor.use_kl_loss=True
   actor_rollout_ref.actor.kl_loss_coef=0.01
   actor_rollout_ref.actor.kl_loss_type=low_var_kl
-  actor_rollout_ref.actor.fsdp_config.param_offload=False
+  "actor_rollout_ref.actor.fsdp_config.param_offload=$PARAM_OFFLOAD"
   "actor_rollout_ref.actor.fsdp_config.optimizer_offload=$OPTIMIZER_OFFLOAD"
 
   "actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=$LOG_PROB_MICRO_BATCH_PER_GPU"
@@ -279,7 +282,7 @@ ppo_args=(
   actor_rollout_ref.rollout.val_kwargs.temperature=0.4
   actor_rollout_ref.rollout.val_kwargs.do_sample=True
   "actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=$REF_LOG_PROB_MICRO_BATCH_PER_GPU"
-  actor_rollout_ref.ref.fsdp_config.param_offload=False
+  "actor_rollout_ref.ref.fsdp_config.param_offload=$PARAM_OFFLOAD"
 
   actor_rollout_ref.actor.use_invalid_action_penalty=True
   "actor_rollout_ref.actor.invalid_action_penalty_coef=$INVALID_ACTION_PENALTY_COEF"
@@ -342,7 +345,7 @@ ppo_args=(
   # unaffected (already gated by trainer.test_freq).
   "++trainer.readable_trajectory_log_path=$run_dir/trajectories_readable.txt"
   ++trainer.trajectory_include_prompt=True
-  "++trainer.trajectory_log_every_n_steps=${TRAJECTORY_LOG_EVERY_N_STEPS:-10}"
+  "++trainer.trajectory_log_every_n_steps=${TRAJECTORY_LOG_EVERY_N_STEPS:-1}"
   "++trainer.print_trajectories=$PRINT_TRAJECTORIES"
   "++trainer.compact_console_output=$COMPACT_CONSOLE_OUTPUT"
   "trainer.save_freq=$SAVE_FREQ"
