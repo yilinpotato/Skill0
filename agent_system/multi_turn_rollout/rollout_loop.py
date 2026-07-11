@@ -371,6 +371,11 @@ class TrajectoryCollector:
         if not trajectories:
             return
 
+        every_n_steps = max(1, int(self.config.trainer.get("trajectory_log_every_n_steps", 1)))
+        global_step = trajectories[0].get("global_step", 0)
+        if not validate and isinstance(global_step, (int, np.integer)) and global_step % every_n_steps != 0:
+            return
+
         if self.config.trainer.get("print_trajectories", False):
             for trajectory in trajectories:
                 print("[Trajectory]")
@@ -395,6 +400,49 @@ class TrajectoryCollector:
 
         self._log_trajectories_to_wandb(trajectories, validate=validate)
         self._log_contexts_to_wandb(trajectories, validate=validate)
+        self._dump_readable_trajectories(trajectories, validate=validate)
+
+    def _dump_readable_trajectories(self, trajectories, *, validate: bool = False):
+        """Append a compact human-readable companion to trajectories.json.
+
+        The machine-readable JSON remains the source of truth.  This text dump
+        is deliberately derived from the same records and cannot affect rollout,
+        reward, or the Skill0 internalization schedule.
+        """
+        path = self.config.trainer.get("readable_trajectory_log_path", None)
+        if not path:
+            base = self._trajectory_log_path()
+            path = f"{base}.txt" if base else None
+        if not path:
+            return
+        try:
+            path = os.path.expanduser(path)
+            directory = os.path.dirname(path)
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+            split = "val" if validate else "train"
+            with open(path, "a", encoding="utf-8") as handle:
+                for trajectory in trajectories:
+                    handle.write(
+                        f"{'=' * 78}\n[{split}] step={trajectory.get('global_step')} "
+                        f"traj={trajectory.get('trajectory_index')} "
+                        f"success={trajectory.get('success_rate')} "
+                        f"valid={trajectory.get('valid_action_rate')} "
+                        f"strict={trajectory.get('strict_valid_action_rate')}\n"
+                    )
+                    handle.write(f"task: {trajectory.get('task')}\n")
+                    for step in trajectory.get("steps", []):
+                        handle.write(
+                            f"[{step.get('step')}] valid={step.get('valid_action')} "
+                            f"strict={step.get('strict_valid_action')} "
+                            f"source={step.get('execution_source')} "
+                            f"env_action={step.get('env_action')} reward={step.get('reward')} "
+                            f"won={step.get('won')}\n"
+                        )
+                        handle.write(f"obs: {step.get('observation')}\n")
+                        handle.write(f"raw: {step.get('raw_response')}\n")
+        except Exception as exc:
+            print(f"[TrajectoryCollector] Skip readable trajectory dump: {exc}")
 
     def preprocess_single_sample(
         self,
@@ -766,6 +814,14 @@ class TrajectoryCollector:
                 batch.batch['responses'], skip_special_tokens=False
             )
             parsed_think_actions = [self._extract_think_action(t) for t in text_actions]
+            projected_actions = [None] * batch_size
+            action_details = [None] * batch_size
+            if "webshop" in str(self.config.env.env_name).lower():
+                # Debug-only protocol audit, aligned with CoSkill's WebShop
+                # output. envs.step still receives the original model output.
+                from agent_system.environments.env_package.webshop.projection import webshop_projection
+                projected_actions, _, action_details = webshop_projection(
+                    list(text_actions), return_details=True)
             
             next_obs, rewards, dones, infos = envs.step(text_actions)
 
@@ -810,6 +866,16 @@ class TrajectoryCollector:
                         "think": self._json_safe(parsed_think_actions[i][0]),
                         "action_text": self._json_safe(parsed_think_actions[i][1]),
                         "model_output": self._json_safe(text_actions[i]),
+                        "projected_action": self._json_safe(projected_actions[i]),
+                        "valid_action": self._json_safe(
+                            action_details[i].get("valid_action") if action_details[i] else None
+                        ),
+                        "strict_valid_action": self._json_safe(
+                            action_details[i].get("strict_valid_action") if action_details[i] else None
+                        ),
+                        "execution_source": self._json_safe(
+                            action_details[i].get("execution_source") if action_details[i] else None
+                        ),
                         "env_action": self._json_safe(info_i.get("env_action", None)),
                         "is_action_valid": self._json_safe(info_i.get("is_action_valid", None)),
                         "reward": self._json_safe(torch_to_numpy(rewards)[i]),
@@ -885,6 +951,13 @@ class TrajectoryCollector:
                 record["episode_length"] = self._json_safe(episode_lengths[i])
                 record["tool_callings"] = self._json_safe(tool_callings[i])
                 record["valid_action_rate"] = self._json_safe(valid_action_ratios[i])
+                steps = record.get("steps", [])
+                record["relaxed_valid_action_rate"] = self._json_safe(
+                    sum(bool(s.get("valid_action")) for s in steps) / max(len(steps), 1)
+                )
+                record["strict_valid_action_rate"] = self._json_safe(
+                    sum(bool(s.get("strict_valid_action")) for s in steps) / max(len(steps), 1)
+                )
                 record["success_rate"] = self._json_safe(success_values[i]) if i < len(success_values) else None
                 if record["task_type"] == "pick_and_place":
                     record["pick_and_place_success_rate"] = record["success_rate"]
