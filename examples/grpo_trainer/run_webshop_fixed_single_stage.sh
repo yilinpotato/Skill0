@@ -79,7 +79,7 @@ fi
 NUM_VISIBLE_GPUS=${NUM_VISIBLE_GPUS:-1}
 
 export MODEL_PATH="${MODEL_PATH:-$CACHE_ROOT/modelscope/hub/models/Qwen/Qwen3-4B-Thinking-2507}"
-export EXPERIMENT_NAME="${EXPERIMENT_NAME:-webshop_qwen3_4b_thinking_2xa800_v7}"
+export EXPERIMENT_NAME="${EXPERIMENT_NAME:-qwen3_4b_webshop_skill0_v2}"
 export RAY_memory_usage_threshold="${RAY_memory_usage_threshold:-0.99}"
 export PYTHONFAULTHANDLER="${PYTHONFAULTHANDLER:-1}"
 
