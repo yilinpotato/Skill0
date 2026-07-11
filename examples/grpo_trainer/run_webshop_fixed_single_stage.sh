@@ -186,7 +186,7 @@ export VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-16384}"
 export VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-256}"
 # 4,096-token WebShop rollouts need a smaller per-GPU backward micro-batch on
 # two A800s. Keep the 72-trajectory rollout, but trade throughput for memory.
-export PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-12}"
+export PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-36}"
 export PPO_MICRO_BATCH_SIZE_PER_GPU="${PPO_MICRO_BATCH_SIZE_PER_GPU:-2}"
 export LOG_PROB_MICRO_BATCH_PER_GPU="${LOG_PROB_MICRO_BATCH_PER_GPU:-4}"
 export REF_LOG_PROB_MICRO_BATCH_PER_GPU="${REF_LOG_PROB_MICRO_BATCH_PER_GPU:-4}"
