@@ -198,6 +198,10 @@ export ENABLE_RESOURCE_MONITOR="${ENABLE_RESOURCE_MONITOR:-1}"
 
 run_dir="$OUTPUT_ROOT/skillrl_mvp/$EXPERIMENT_NAME"
 mkdir -p "$run_dir" "$WANDB_DIR"
+# Isolate parquet dataset metadata/cache from other supercomputer jobs. Shared
+# global Hugging Face caches can leave or race on *.incomplete directories.
+export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$run_dir/hf_datasets_cache}"
+mkdir -p "$HF_DATASETS_CACHE"
 
 resume_args=()
 if [[ -n "$RESUME_FROM_STEP" ]]; then
