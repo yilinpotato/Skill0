@@ -359,8 +359,15 @@ ppo_args=(
   "++trainer.resume_dataloader_state=$RESUME_DATALOADER_STATE"
   "${resume_args[@]}"
   trainer.val_before_train=False
-  "ray_init.num_cpus=$RAY_NUM_CPUS"
 )
+
+# Scheduler-provided Ray clusters reject local CPU/GPU declarations.  Match
+# SkillRL: pass a CPU limit only when this process creates its own Ray runtime.
+if [[ -z "${RAY_ADDRESS:-}" ]]; then
+  ppo_args+=("ray_init.num_cpus=$RAY_NUM_CPUS")
+else
+  echo "Using existing Ray cluster at RAY_ADDRESS=$RAY_ADDRESS"
+fi
 
 {
   echo "timestamp=$(date '+%Y-%m-%d %H:%M:%S')"
