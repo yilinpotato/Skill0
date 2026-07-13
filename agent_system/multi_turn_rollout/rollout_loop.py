@@ -13,11 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import torch
-import numpy as np
+import contextlib
+import fcntl
 import json
 import os
 import re
+import tempfile
+
+import torch
+import numpy as np
 from verl import DataProto
 from verl.utils.dataset.rl_dataset import collate_fn
 from verl.utils.model import compute_position_id_with_mask
@@ -122,6 +126,97 @@ class TrajectoryCollector:
         if not log_dir:
             return None
         return os.path.join(log_dir, "contexts.json")
+
+    @contextlib.contextmanager
+    def _json_log_lock(self, log_path: str):
+        """Serialize read-modify-write JSON debug logs across Ray workers.
+
+        The rollout and optimization paths never depend on these logs.  Keeping
+        a separate lock file lets a reader see either the previous complete JSON
+        list or the new complete list, never a half-written file.
+        """
+        lock_path = f"{log_path}.lock"
+        with open(lock_path, "a", encoding="utf-8") as lock_handle:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+
+    @staticmethod
+    def _corrupt_json_backup_path(log_path: str) -> str:
+        return f"{log_path}.corrupt-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+
+    def _load_json_log_entries(self, log_path: str, *, label: str):
+        if not os.path.exists(log_path) or os.path.getsize(log_path) == 0:
+            return []
+
+        try:
+            with open(log_path, "r", encoding="utf-8") as handle:
+                entries = json.load(handle)
+            if isinstance(entries, list):
+                return entries
+            raise ValueError("top-level JSON value is not a list")
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError, ValueError) as exc:
+            # A previous process can be interrupted while writing an old log.
+            # Preserve it for forensics, but never let optional debugging I/O
+            # abort the actual training loop.
+            backup_path = self._corrupt_json_backup_path(log_path)
+            try:
+                os.replace(log_path, backup_path)
+                print(
+                    f"[TrajectoryCollector] Recovered malformed {label} log; "
+                    f"moved it to {backup_path}: {exc}",
+                    flush=True,
+                )
+            except OSError as backup_exc:
+                print(
+                    f"[TrajectoryCollector] Cannot read {label} log {log_path}: {exc}; "
+                    f"could not preserve the malformed file: {backup_exc}",
+                    flush=True,
+                )
+            return []
+
+    @staticmethod
+    def _atomic_write_json_log(log_path: str, entries) -> None:
+        directory = os.path.dirname(log_path) or "."
+        fd, temporary_path = tempfile.mkstemp(
+            prefix=f".{os.path.basename(log_path)}.",
+            suffix=".tmp",
+            dir=directory,
+            text=True,
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(entries, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, log_path)
+        finally:
+            if os.path.exists(temporary_path):
+                os.unlink(temporary_path)
+
+    def _append_json_log_entries(self, log_path: str, entries, *, label: str) -> None:
+        """Best-effort, crash-safe append for optional JSON debug artifacts."""
+        if not entries:
+            return
+        directory = os.path.dirname(log_path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        try:
+            with self._json_log_lock(log_path):
+                existing = self._load_json_log_entries(log_path, label=label)
+                existing.extend(entries)
+                self._atomic_write_json_log(log_path, existing)
+        except Exception as exc:
+            # Debug serialization, disk, and permission failures must be
+            # visible, but they must not turn a successful rollout into a
+            # failed training job.
+            print(
+                f"[TrajectoryCollector] Skip {label} debug dump at {log_path}: {exc}",
+                flush=True,
+            )
 
     def _wandb_trajectory_logging_enabled(self) -> bool:
         logger_cfg = self.config.trainer.get("logger", [])
@@ -338,17 +433,6 @@ class TrajectoryCollector:
         if not log_path:
             return
 
-        log_dir = os.path.dirname(log_path)
-        if log_dir:
-            os.makedirs(log_dir, exist_ok=True)
-
-        existing = []
-        if os.path.exists(log_path) and os.path.getsize(log_path) > 0:
-            with open(log_path, "r", encoding="utf-8") as f:
-                existing = json.load(f)
-            if not isinstance(existing, list):
-                raise ValueError(f"Context log must contain a JSON list: {log_path}")
-
         flattened = []
         for c in contexts:
             for step_ctx in c.get("contexts", []):
@@ -362,10 +446,7 @@ class TrajectoryCollector:
                         "context": step_ctx.get("prompt_text"),
                     }
                 )
-        existing.extend(flattened)
-        with open(log_path, "w", encoding="utf-8") as f:
-            json.dump(existing, f, ensure_ascii=False, indent=2)
-            f.write("\n")
+        self._append_json_log_entries(log_path, flattened, label="context")
 
     def _dump_trajectories(self, trajectories, *, validate: bool = False):
         if not trajectories:
@@ -384,19 +465,7 @@ class TrajectoryCollector:
 
         log_path = self._trajectory_log_path()
         if log_path:
-            log_dir = os.path.dirname(log_path)
-            if log_dir:
-                os.makedirs(log_dir, exist_ok=True)
-            existing = []
-            if os.path.exists(log_path) and os.path.getsize(log_path) > 0:
-                with open(log_path, "r", encoding="utf-8") as f:
-                    existing = json.load(f)
-                if not isinstance(existing, list):
-                    raise ValueError(f"Trajectory log must contain a JSON list: {log_path}")
-            existing.extend(trajectories)
-            with open(log_path, "w", encoding="utf-8") as f:
-                json.dump(existing, f, ensure_ascii=False, indent=2)
-                f.write("\n")
+            self._append_json_log_entries(log_path, trajectories, label="trajectory")
 
         self._log_trajectories_to_wandb(trajectories, validate=validate)
         self._log_contexts_to_wandb(trajectories, validate=validate)
