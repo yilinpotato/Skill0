@@ -80,6 +80,7 @@ class TrajectoryCollector:
         episode_lengths: np.ndarray,
         success: Dict[str, np.ndarray],
         valid_action_ratios: np.ndarray,
+        relaxed_valid_action_ratios: np.ndarray,
     ):
         if not self._compact_console_output_enabled():
             return
@@ -99,13 +100,14 @@ class TrajectoryCollector:
             f"batch_success_rate={batch_success_rate:.3f}",
             flush=True,
         )
-        for traj_idx, (steps, traj_success, valid_ratio) in enumerate(
-            zip(episode_lengths, success_values, valid_action_ratios)
+        for traj_idx, (steps, traj_success, valid_ratio, relaxed_valid_ratio) in enumerate(
+            zip(episode_lengths, success_values, valid_action_ratios, relaxed_valid_action_ratios)
         ):
             print(
                 f"[Train][traj {traj_idx}] "
                 f"steps={int(steps)} success={int(traj_success > 0)} "
-                f"valid_action_rate={float(valid_ratio):.3f}",
+                f"strict_valid_action_rate={float(valid_ratio):.3f} "
+                f"relaxed_valid_action_rate={float(relaxed_valid_ratio):.3f}",
                 flush=True,
             )
 
@@ -249,6 +251,40 @@ class TrajectoryCollector:
         think_text = think_match.group(1).strip() if think_match else text.strip()
         action_text = action_match.group(1).strip() if action_match else None
         return think_text, action_text
+
+    def _prompts_open_think(self, input_ids, attention_mask):
+        """Return whether each rendered Qwen prompt already opened ``<think>``.
+
+        Qwen Thinking's chat template appends ``<think>`` to the *prompt*.
+        The generated response therefore correctly starts with reasoning text
+        and later emits ``</think>``, but it does not repeat the opening tag.
+        Inspect only a short decoded suffix so this audit has negligible cost
+        relative to generation and remains valid for templates that do not use
+        this convention.
+        """
+        flags = []
+        for token_ids, mask in zip(input_ids, attention_mask):
+            prompt_ids = token_ids[mask.to(dtype=torch.bool)][-32:]
+            tail = self.tokenizer.decode(
+                prompt_ids.detach().cpu().tolist(), skip_special_tokens=False
+            )
+            flags.append(tail.rstrip().endswith("<think>"))
+        return flags
+
+    @staticmethod
+    def _render_protocol_response(response: str, prompt_opens_think: bool):
+        """Restore the opener supplied by the prompt for protocol accounting.
+
+        This does not modify sampled response tokens.  It only reconstructs
+        the complete transcript that was presented to the environment before
+        strict WebShop validation and invalid-action penalty are computed.
+        """
+        response = "" if response is None else str(response)
+        has_open = bool(re.search(r"<think>", response, flags=re.IGNORECASE))
+        has_close = bool(re.search(r"</think>", response, flags=re.IGNORECASE))
+        if prompt_opens_think and not has_open and has_close:
+            return "<think>\n" + response, True
+        return response, False
 
     def _log_trajectories_to_wandb(self, trajectories, *, validate: bool):
         if not self._wandb_trajectory_logging_enabled():
@@ -510,6 +546,9 @@ class TrajectoryCollector:
                         )
                         handle.write(f"obs: {step.get('observation')}\n")
                         handle.write(f"raw: {step.get('raw_response')}\n")
+                        if step.get("restored_prompt_think"):
+                            handle.write("protocol: restored <think> opener from the chat prompt\n")
+                            handle.write(f"rendered: {step.get('protocol_response')}\n")
         except Exception as exc:
             print(f"[TrajectoryCollector] Skip readable trajectory dump: {exc}")
 
@@ -806,6 +845,7 @@ class TrajectoryCollector:
         episode_rewards = np.zeros(batch_size, dtype=np.float32)
         tool_callings = np.zeros(batch_size, dtype=np.float32)
         valid_action_counts = np.zeros(batch_size, dtype=np.float32)
+        relaxed_valid_action_counts = np.zeros(batch_size, dtype=np.float32)
         active_action_counts = np.zeros(batch_size, dtype=np.float32)
         trajectory_records = [
             {
@@ -837,6 +877,12 @@ class TrajectoryCollector:
                 break
 
             batch = self.preprocess_batch(gen_batch=gen_batch, obs=obs)
+            is_webshop = "webshop" in str(self.config.env.env_name).lower()
+            prompt_opens_think = (
+                self._prompts_open_think(
+                    batch.batch["input_ids"], batch.batch["attention_mask"]
+                ) if is_webshop else [False] * batch_size
+            )
             prompt_texts = batch.non_tensor_batch.get("prompt_text", None)
             if trajectory_records is not None and prompt_texts is not None:
                 for i in range(batch_size):
@@ -879,15 +925,23 @@ class TrajectoryCollector:
             # Qwen treats <think>/<action> delimiters as special tokens. They
             # are required by WebShop's strict action protocol, so preserve
             # them until the environment projection has validated the action.
-            text_actions = self.tokenizer.batch_decode(
+            raw_text_actions = self.tokenizer.batch_decode(
                 batch.batch['responses'], skip_special_tokens=False
             )
+            text_actions, restored_prompt_think = zip(*[
+                self._render_protocol_response(response, opens_think)
+                for response, opens_think in zip(raw_text_actions, prompt_opens_think)
+            ])
+            text_actions = list(text_actions)
+            restored_prompt_think = list(restored_prompt_think)
             parsed_think_actions = [self._extract_think_action(t) for t in text_actions]
             projected_actions = [None] * batch_size
             action_details = [None] * batch_size
-            if "webshop" in str(self.config.env.env_name).lower():
-                # Debug-only protocol audit, aligned with CoSkill's WebShop
-                # output. envs.step still receives the original model output.
+            if is_webshop:
+                # Validate the complete rendered protocol.  ``text_actions``
+                # may include the <think> opener that Qwen's chat template
+                # already placed in the prompt; sampled model tokens are kept
+                # separately in ``raw_text_actions`` for PPO and debugging.
                 from agent_system.environments.env_package.webshop.projection import webshop_projection
                 projected_actions, _, action_details = webshop_projection(
                     list(text_actions), return_details=True)
@@ -906,6 +960,15 @@ class TrajectoryCollector:
             else:
                 batch.non_tensor_batch['is_action_valid'] = np.ones(batch_size, dtype=bool)
             valid_action_counts[active_masks] += batch.non_tensor_batch['is_action_valid'][active_masks].astype(np.float32)
+            if is_webshop:
+                relaxed_valid_action_counts[active_masks] += np.array([
+                    bool(detail.get("valid_action")) if detail else False
+                    for detail in action_details
+                ], dtype=np.float32)[active_masks]
+            else:
+                relaxed_valid_action_counts[active_masks] += batch.non_tensor_batch[
+                    'is_action_valid'
+                ][active_masks].astype(np.float32)
             active_action_counts[active_masks] += 1.0
 
             if 'tool_calling' in infos[0]:
@@ -931,10 +994,12 @@ class TrajectoryCollector:
                         "step": _step + 1,
                         "active": self._json_safe(active_masks[i]),
                         "observation": self._json_safe(obs_anchor[i] if obs_anchor is not None else None),
-                        "raw_response": self._json_safe(text_actions[i]),
+                        "raw_response": self._json_safe(raw_text_actions[i]),
                         "think": self._json_safe(parsed_think_actions[i][0]),
                         "action_text": self._json_safe(parsed_think_actions[i][1]),
-                        "model_output": self._json_safe(text_actions[i]),
+                        "model_output": self._json_safe(raw_text_actions[i]),
+                        "protocol_response": self._json_safe(text_actions[i]),
+                        "restored_prompt_think": self._json_safe(restored_prompt_think[i]),
                         "projected_action": self._json_safe(projected_actions[i]),
                         "valid_action": self._json_safe(
                             action_details[i].get("valid_action") if action_details[i] else None
@@ -987,6 +1052,10 @@ class TrajectoryCollector:
                     )
         valid_action_ratios = np.divide(
             valid_action_counts,
+            np.maximum(active_action_counts, 1.0),
+        )
+        relaxed_valid_action_ratios = np.divide(
+            relaxed_valid_action_counts,
             np.maximum(active_action_counts, 1.0),
         )
 
@@ -1052,6 +1121,7 @@ class TrajectoryCollector:
             episode_lengths=episode_lengths,
             success=success,
             valid_action_ratios=valid_action_ratios,
+            relaxed_valid_action_ratios=relaxed_valid_action_ratios,
         )
         
         return total_batch_list, episode_rewards, episode_lengths, success, traj_uid, tool_callings
