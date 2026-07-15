@@ -135,6 +135,7 @@ source scripts/setup_alfworld_cache.sh
 run_dir="$OUTPUT_ROOT/skillrl_mvp/$EXPERIMENT_NAME"
 mkdir -p "$run_dir"
 mkdir -p "$WANDB_DIR"
+export COMPARISON_METRICS_PATH="$run_dir/comparison_metrics.jsonl"
 
 resume_args=()
 if [[ -n "$RESUME_FROM_STEP" ]]; then
@@ -302,6 +303,9 @@ ppo_args=(
     "++trainer.wandb_max_summary_rows=$WANDB_MAX_SUMMARY_ROWS"
     "++trainer.wandb_max_step_rows=$WANDB_MAX_STEP_ROWS"
     "++trainer.metrics_jsonl_path=$OUTPUT_ROOT/skillrl_mvp/$EXPERIMENT_NAME/metrics.jsonl"
+    "++trainer.comparison_metrics_jsonl_path=$COMPARISON_METRICS_PATH"
+    ++trainer.comparison_method=skill0
+    ++trainer.comparison_benchmark=alfworld
     "++trainer.trajectory_log_path=$OUTPUT_ROOT/skillrl_mvp/$EXPERIMENT_NAME/trajectories.json"
     "++trainer.context_log_path=$OUTPUT_ROOT/skillrl_mvp/$EXPERIMENT_NAME/contexts.json"
     ++trainer.trajectory_include_prompt=False
