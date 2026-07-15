@@ -185,6 +185,13 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> Dict[str,
         # "episode/tool_call_count/min":
         #     batch.non_tensor_batch["tool_callings"][unique_idx].min().item(),
         **({f"episode/{k}": v[0].item() for k, v in batch.non_tensor_batch.items() if "success_rate" in k}),
+        # Actor rollout token counts.  ``gather_rollout_data`` retains one row
+        # for every active environment step, so these are the actual prompt /
+        # completion tokens submitted to generation in this rollout (rather
+        # than PPO forward/backward throughput tokens).
+        "tokens/small_model/prompt": torch.sum(prompt_length).detach().item(),
+        "tokens/small_model/response": torch.sum(response_length).detach().item(),
+        "tokens/small_model/total": (torch.sum(prompt_length) + torch.sum(response_length)).detach().item(),
     }
     return metrics
 
