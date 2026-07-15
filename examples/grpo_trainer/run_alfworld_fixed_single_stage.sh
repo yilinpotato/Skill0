@@ -376,6 +376,7 @@ printf '%s\n' "${ppo_args[@]}" > "$run_dir/ppo_args.txt"
 
 if [[ ! -f "$run_dir/latest_checkpointed_iteration.txt" && "${KEEP_OLD_METRICS:-0}" != "1" ]]; then
   : > "$run_dir/metrics.jsonl"
+  : > "$run_dir/comparison_metrics.jsonl"
 fi
 
 # 启动训练
