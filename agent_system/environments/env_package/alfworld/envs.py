@@ -27,6 +27,32 @@ from agent_system.environments.env_package.alfworld.alfworld.agents.environment 
 ALF_ACTION_LIST=["pass", "goto", "pick", "put", "open", "close", "toggle", "heat", "clean", "cool", "slice", "inventory", "examine", "look"]
 # ALF_ITEM_LIST =
 
+
+def normalize_task_types(task_type):
+    """Convert an optional Hydra/list task-type setting into plain strings.
+
+    ``OmegaConf.ListConfig`` is iterable but is not a string.  Passing it to
+    ``task_type in gamefile`` therefore raises a TypeError in Ray workers.
+    Keeping this conversion at the environment boundary also makes actor
+    construction independent of Hydra's container implementation.
+    """
+    if task_type is None:
+        return []
+    if isinstance(task_type, str):
+        return [task_type] if task_type else []
+    try:
+        return [str(item) for item in task_type if str(item)]
+    except TypeError:
+        return [str(task_type)]
+
+
+def task_type_for_worker(task_types, worker_index, group_n):
+    """Assign one task type per GRPO prompt group, round-robin over types."""
+    if not task_types:
+        return None
+    prompt_group_index = worker_index // max(int(group_n), 1)
+    return task_types[prompt_group_index % len(task_types)]
+
 def load_config_file(path):
     assert os.path.exists(path), "Invalid config file"
     with open(path) as reader:
@@ -58,11 +84,18 @@ class AlfworldWorker:
     Each actor holds one environment instance.
     """
     
-    def __init__(self, config, seed, base_env, is_train=True, env_kwargs={}):
+    def __init__(self, config, seed, base_env, is_train=True, env_kwargs={}, task_type=None):
         self.env = base_env.init_env(batch_size=1)  # Each worker holds only one sub-environment
         self.env.seed(seed)
         self.is_train = is_train
-        self.task_type = env_kwargs.get('train_task_type' if is_train else 'eval_task_type', None)
+        # ``AlfworldEnvs`` resolves list-valued configurations per prompt
+        # group.  The fallback keeps direct worker construction compatible.
+        self.task_type = task_type
+        if self.task_type is None:
+            task_types = normalize_task_types(
+                env_kwargs.get('train_task_type' if is_train else 'eval_task_type', None)
+            )
+            self.task_type = task_types[0] if task_types else None
         self.task_sample_max_attempts = int(
             env_kwargs.get('task_sample_max_attempts')
             or os.environ.get('ALFWORLD_TASK_SAMPLE_MAX_ATTEMPTS', 2000)
@@ -124,11 +157,23 @@ class AlfworldEnvs(gym.Env):
         self.num_processes = env_num * group_n
         self.group_n = group_n
 
+        configured_task_types = env_kwargs.get(
+            'train_task_type' if is_train else 'eval_task_type', None
+        )
+        task_types = normalize_task_types(configured_task_types)
+
         # Create Ray remote actors instead of processes
         env_worker = ray.remote(**resources_per_worker)(AlfworldWorker)
         self.workers = []
         for i in range(self.num_processes):
-            worker = env_worker.remote(config, seed + (i // self.group_n), base_env, is_train, env_kwargs)
+            worker = env_worker.remote(
+                config,
+                seed + (i // self.group_n),
+                base_env,
+                is_train,
+                env_kwargs,
+                task_type_for_worker(task_types, i, self.group_n),
+            )
             self.workers.append(worker)
 
         self.prev_admissible_commands = [None for _ in range(self.num_processes)]
