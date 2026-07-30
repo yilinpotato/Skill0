@@ -114,8 +114,11 @@ export COMPACT_CONSOLE_OUTPUT="${COMPACT_CONSOLE_OUTPUT:-True}"
 export MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-10000}"
 # Qwen3 thinking models are prompted inside an opened <think> block and often
 # need substantially more than 64 tokens to reach </think><action>...</action>.
-export MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-2048}"
-export VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-8192}"
+# Preserve the 4,096-token response budget used by the completed comparison
+# runs.  The serving context must leave room for both the configured prompt
+# and response budgets; 14,096 = 10,000 + 4,096.
+export MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-4096}"
+export VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-14096}"
 
 # A800 80GB vLLM / FSDP colocated settings.
 export VLLM_GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.70}"
