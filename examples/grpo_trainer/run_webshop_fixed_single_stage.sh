@@ -199,6 +199,7 @@ export ENABLE_RESOURCE_MONITOR="${ENABLE_RESOURCE_MONITOR:-1}"
 
 run_dir="$OUTPUT_ROOT/skillrl_mvp/$EXPERIMENT_NAME"
 mkdir -p "$run_dir" "$WANDB_DIR"
+export COMPARISON_METRICS_PATH="$run_dir/comparison_metrics.jsonl"
 # Isolate parquet dataset metadata/cache from other supercomputer jobs. Shared
 # global Hugging Face caches can leave or race on *.incomplete directories.
 export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$run_dir/hf_datasets_cache}"
@@ -339,6 +340,9 @@ ppo_args=(
   "++trainer.wandb_max_summary_rows=$WANDB_MAX_SUMMARY_ROWS"
   "++trainer.wandb_max_step_rows=$WANDB_MAX_STEP_ROWS"
   "++trainer.metrics_jsonl_path=$run_dir/metrics.jsonl"
+  "++trainer.comparison_metrics_jsonl_path=$COMPARISON_METRICS_PATH"
+  ++trainer.comparison_method=skill0
+  ++trainer.comparison_benchmark=webshop
   "++trainer.trajectory_log_path=$run_dir/trajectories.json"
   "++trainer.context_log_path=$run_dir/contexts.json"
   # Human-readable, step-by-step trajectory dump (observation / prompt / model

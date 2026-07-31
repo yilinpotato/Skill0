@@ -217,6 +217,41 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> Dict[str,
         "episode/salvaged_action_ratio": 0.0,
         "episode/fallback_action_ratio": 0.0,
     }
+
+    # Per-task rollout accounting.  ``episode_task_type`` is attached by the
+    # multi-turn collector to every active decision.  Count success once per
+    # trajectory, but count prompt/response tokens and valid actions once per
+    # generated decision.  Older checkpoints without the field remain usable
+    # and are explicitly reported as ``unknown`` rather than silently mixed.
+    task_labels = np.asarray(
+        batch.non_tensor_batch.get("episode_task_type", ["unknown"] * len(prompt_length)),
+        dtype=object,
+    )
+    if len(task_labels) != len(prompt_length):
+        task_labels = np.asarray(["unknown"] * len(prompt_length), dtype=object)
+    episode_task_labels = task_labels[unique_idx]
+    for task_type in sorted({str(value) for value in task_labels}):
+        action_idx = np.flatnonzero(task_labels == task_type)
+        episode_idx = np.flatnonzero(episode_task_labels == task_type)
+        if not len(action_idx) or not len(episode_idx):
+            continue
+        task_prompt = int(torch.sum(prompt_length[action_idx]).detach().item())
+        task_response = int(torch.sum(response_length[action_idx]).detach().item())
+        task_wins = int(np.sum(episode_success[episode_idx] > 0.5))
+        task_actions = int(np.sum(episode_lengths[episode_idx]))
+        task_valid_ratio = float(action_valid[action_idx].astype(np.float32).mean())
+        prefix = f"episode/{task_type}"
+        token_prefix = f"tokens/small_model/by_task_type/{task_type}"
+        metrics.update({
+            f"{prefix}/episodes": int(len(episode_idx)),
+            f"{prefix}/wins": task_wins,
+            f"{prefix}/success_rate": task_wins / len(episode_idx),
+            f"{prefix}/action_count": task_actions,
+            f"{prefix}/valid_action_ratio": task_valid_ratio,
+            f"{token_prefix}/prompt": task_prompt,
+            f"{token_prefix}/response": task_response,
+            f"{token_prefix}/total": task_prompt + task_response,
+        })
     return metrics
 
 

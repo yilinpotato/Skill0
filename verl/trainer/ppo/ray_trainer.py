@@ -465,6 +465,7 @@ class RayPPOTrainer:
         # last cumulative values from their existing comparison JSONL.
         self._comparison_totals_loaded = False
         self._comparison_totals = {}
+        self._comparison_task_totals = {}
         self._comparison_large_raw = None
         self._comparison_update_raw = None
 
@@ -522,6 +523,20 @@ class RayPPOTrainer:
             }
             for target, source in mapping.items():
                 totals[target] = int(self._comparison_scalar(last.get(source, totals[target]), totals[target]))
+            for key, value in last.items():
+                if not key.startswith("episode/") or not key.endswith("/episodes_cumulative"):
+                    continue
+                task_type = key[len("episode/"):-len("/episodes_cumulative")]
+                if not task_type:
+                    continue
+                self._comparison_task_totals[task_type] = {
+                    "episodes": int(self._comparison_scalar(value, 0)),
+                    "wins": int(self._comparison_scalar(last.get(f"episode/{task_type}/wins_cumulative", 0), 0)),
+                    "actions": int(self._comparison_scalar(last.get(f"episode/{task_type}/action_count_cumulative", 0), 0)),
+                    "small_prompt": int(self._comparison_scalar(last.get(f"tokens/small_model/by_task_type/{task_type}/prompt_cumulative", 0), 0)),
+                    "small_response": int(self._comparison_scalar(last.get(f"tokens/small_model/by_task_type/{task_type}/response_cumulative", 0), 0)),
+                    "small_total": int(self._comparison_scalar(last.get(f"tokens/small_model/by_task_type/{task_type}/total_cumulative", 0), 0)),
+                }
         self._comparison_totals = totals
         self._comparison_totals_loaded = True
 
@@ -576,6 +591,41 @@ class RayPPOTrainer:
         totals["large_total"] += max(0, large_delta[2])
         totals["cloud_round"] += max(0, update_delta)
 
+        # Preserve task-level cumulative ledgers across resumed runs.  Skill0
+        # has no cloud fields, but its edge rollout fields intentionally use
+        # the same naming convention as CoSkill and SkillRL.
+        for key, value in list(metrics.items()):
+            if not key.startswith("episode/") or not key.endswith("/episodes"):
+                continue
+            task_type = key[len("episode/"):-len("/episodes")]
+            if not task_type:
+                continue
+            task_totals = self._comparison_task_totals.setdefault(task_type, {
+                "episodes": 0, "wins": 0, "actions": 0,
+                "small_prompt": 0, "small_response": 0, "small_total": 0,
+            })
+            task_prefix = f"episode/{task_type}"
+            token_prefix = f"tokens/small_model/by_task_type/{task_type}"
+            deltas = {
+                "episodes": int(get(value, 0)),
+                "wins": int(get(metrics.get(f"{task_prefix}/wins", 0), 0)),
+                "actions": int(get(metrics.get(f"{task_prefix}/action_count", 0), 0)),
+                "small_prompt": int(get(metrics.get(f"{token_prefix}/prompt", 0), 0)),
+                "small_response": int(get(metrics.get(f"{token_prefix}/response", 0), 0)),
+                "small_total": int(get(metrics.get(f"{token_prefix}/total", 0), 0)),
+            }
+            for total_key, delta in deltas.items():
+                task_totals[total_key] += max(0, delta)
+            metrics.update({
+                f"{task_prefix}/episodes_cumulative": task_totals["episodes"],
+                f"{task_prefix}/wins_cumulative": task_totals["wins"],
+                f"{task_prefix}/success_rate_cumulative": task_totals["wins"] / max(task_totals["episodes"], 1),
+                f"{task_prefix}/action_count_cumulative": task_totals["actions"],
+                f"{token_prefix}/prompt_cumulative": task_totals["small_prompt"],
+                f"{token_prefix}/response_cumulative": task_totals["small_response"],
+                f"{token_prefix}/total_cumulative": task_totals["small_total"],
+            })
+
         rollout_seconds = float(get(timing_raw.get("gen", 0.0), 0.0))
         group_seconds = float(get(timing_raw.get("step", 0.0), 0.0))
         memory_cfg = self.config.env.get("skills_only_memory", {})
@@ -595,23 +645,12 @@ class RayPPOTrainer:
             "tokens/small_model/prompt_cumulative": totals["small_prompt"],
             "tokens/small_model/response_cumulative": totals["small_response"],
             "tokens/small_model/total_cumulative": totals["small_total"],
-            "tokens/large_model/prompt": max(0, large_delta[0]),
-            "tokens/large_model/completion": max(0, large_delta[1]),
-            "tokens/large_model/total": max(0, large_delta[2]),
-            "tokens/large_model/accounting": "provider_api_usage",
-            "tokens/large_model/prompt_cumulative": totals["large_prompt"],
-            "tokens/large_model/completion_cumulative": totals["large_completion"],
-            "tokens/large_model/total_cumulative": totals["large_total"],
             "experiment/skill_tree_enabled": 0,
             "experiment/skill_tree_evolve_enabled": 0,
             "experiment/skill_bullets_enabled": int(bool(self.config.env.get("use_skills_only_memory", False))),
-            "experiment/cloud_round": totals["cloud_round"],
-            "coskill/cloud_update_fired": bool(update_delta > 0),
             "skill_tree/n_nodes": 0,
             "timing_s/rollout": rollout_seconds,
-            "timing_s/cloud_update": 0.0,
             "timing_s/group_total": group_seconds,
-            "comparison/timing_cloud_update_measured": 0,
             "perf/throughput_episodes_per_second": count / max(rollout_seconds, 1e-9),
             "perf/throughput_small_tokens_per_second": small_total / max(rollout_seconds, 1e-9),
         })

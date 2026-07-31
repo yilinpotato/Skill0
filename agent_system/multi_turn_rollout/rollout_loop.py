@@ -43,6 +43,42 @@ PICK_AND_PLACE_CORRECT_FORM = (
 )
 
 
+def infer_rollout_task_type(reset_info, initial_observation) -> str:
+    """Infer a canonical ALFWorld/WebShop label for metric accounting only.
+
+    The label is derived from public reset data and is never added to a model
+    prompt.  It keeps Skill0's native metrics compatible with the task buckets
+    emitted by CoSkill and SkillRL.
+    """
+    info = reset_info if isinstance(reset_info, dict) else {}
+    gamefile = str(info.get("extra.gamefile", "") or "").lower()
+    for needle, label in (
+        ("pick_two_obj_and_place", "pick_two_obj_and_place"),
+        ("look_at_obj_in_light", "look_at_obj_in_light"),
+        ("pick_clean_then_place_in_recep", "clean"),
+        ("pick_heat_then_place_in_recep", "heat"),
+        ("pick_cool_then_place_in_recep", "cool"),
+        ("pick_and_place", "pick_and_place"),
+    ):
+        if needle in gamefile:
+            return label
+
+    text = str(initial_observation or "").lower()
+    if any(word in text for word in ("shoe", "boot", "sneaker", "sandal", "heel", "slipper")):
+        return "footwear"
+    if any(word in text for word in ("shirt", "dress", "jacket", "pant", "coat", "sweater", "blouse", "clothing", "clothes", "t-shirt")):
+        return "apparel"
+    if any(word in text for word in ("laptop", "phone", "computer", "tablet", "charger", "cable", "headphone", "speaker", "camera", "electronic")):
+        return "electronics"
+    if any(word in text for word in ("necklace", "ring", "bracelet", "earring", "watch", "jewelry", "bag", "purse", "wallet")):
+        return "accessories"
+    if any(word in text for word in ("furniture", "lamp", "curtain", "pillow", "bedding", "decor", "candle", "vase", "rug")):
+        return "home_decor"
+    if any(word in text for word in ("cream", "lotion", "shampoo", "conditioner", "moisturizer", "serum", "makeup", "beauty", "vitamin", "supplement")):
+        return "beauty_health"
+    return "other" if text else "unknown"
+
+
 class TrajectoryCollector:
     def __init__(self, config, tokenizer: PreTrainedTokenizer, processor=None, traces_pool: Optional[TracesPool] = None):
         self.config = config
@@ -854,6 +890,16 @@ class TrajectoryCollector:
         valid_action_counts = np.zeros(batch_size, dtype=np.float32)
         relaxed_valid_action_counts = np.zeros(batch_size, dtype=np.float32)
         active_action_counts = np.zeros(batch_size, dtype=np.float32)
+        reset_anchors = obs.get("anchor")
+        if reset_anchors is None:
+            reset_anchors = obs.get("text", [None] * batch_size)
+        episode_task_types = np.asarray([
+            infer_rollout_task_type(
+                reset_infos[i] if i < len(reset_infos) else {},
+                reset_anchors[i] if reset_anchors is not None and i < len(reset_anchors) else None,
+            )
+            for i in range(batch_size)
+        ], dtype=object)
         trajectory_records = [
             {
                 "global_step": self._json_safe(gen_batch.meta_info.get("global_step", None)),
@@ -862,7 +908,7 @@ class TrajectoryCollector:
                 "traj_uid": traj_uid[i],
                 "task": getattr(envs, "tasks", [None] * batch_size)[i],
                 "gamefile": reset_infos[i].get("extra.gamefile") if i < len(reset_infos) else None,
-                "task_type": None,
+                "task_type": str(episode_task_types[i]),
                 "prompt_text": None,
                 "contexts": [],
                 "pick_and_place_correct_form": PICK_AND_PLACE_CORRECT_FORM,
@@ -871,12 +917,6 @@ class TrajectoryCollector:
             for i in range(batch_size)
         ] if (self._trajectory_logging_enabled() or self.traces_pool is not None) else None
 
-        if trajectory_records is not None:
-            for i, record in enumerate(trajectory_records):
-                gamefile = record["gamefile"] or ""
-                record["task_type"] = "pick_and_place" if (
-                    "pick_and_place" in gamefile and "pick_two_obj_and_place" not in gamefile
-                ) else "other"
         # Trajectory collection loop
         for _step in range(self.config.env.max_steps):
             active_masks = np.logical_not(is_done)
@@ -1038,6 +1078,7 @@ class TrajectoryCollector:
             batch_list: list[dict] = to_list_of_dict(batch)
 
             for i in range(batch_size):
+                batch_list[i]["episode_task_type"] = str(episode_task_types[i])
                 total_batch_list[i].append(batch_list[i])
                 total_infos[i].append(infos[i])
 
