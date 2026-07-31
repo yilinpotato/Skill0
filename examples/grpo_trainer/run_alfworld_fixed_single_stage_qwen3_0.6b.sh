@@ -14,5 +14,8 @@ if [[ -z "${MODEL_PATH:-}" ]]; then
 fi
 
 export EXPERIMENT_NAME="${EXPERIMENT_NAME:-alfworld_qwen3_0.6b_thinking_v6}"
+# This is a distinct resource/optimizer profile for the scale experiment.
+# Keep an explicit override available for reproducing the historical launcher.
+export SKILL0_A800_EFFICIENCY_PROFILE="${SKILL0_A800_EFFICIENCY_PROFILE:-1}"
 
 exec bash "$SCRIPT_DIR/run_alfworld_fixed_single_stage.sh" "$@"

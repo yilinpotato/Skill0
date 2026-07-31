@@ -21,6 +21,12 @@ export DATA_ROOT="${DATA_ROOT:-$PROJECT_ROOT/skillrl_data/verl-agent}"
 export OUTPUT_ROOT="${OUTPUT_ROOT:-$PROJECT_ROOT/skillrl_outputs}"
 export EXPERIMENT_NAME="${EXPERIMENT_NAME:-alfworld_qwen3_4b_thinking_v6}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
+NUM_VISIBLE_GPUS=$(tr ',' '\n' <<<"$CUDA_VISIBLE_DEVICES" | awk 'NF {count += 1} END {print count + 0}')
+export N_GPUS_PER_NODE="${N_GPUS_PER_NODE:-$NUM_VISIBLE_GPUS}"
+if ! [[ "$N_GPUS_PER_NODE" =~ ^[1-9][0-9]*$ ]] || [[ "$N_GPUS_PER_NODE" -ne "$NUM_VISIBLE_GPUS" ]]; then
+  echo "N_GPUS_PER_NODE=$N_GPUS_PER_NODE must equal visible GPU count=$NUM_VISIBLE_GPUS." >&2
+  exit 1
+fi
 export RAY_memory_usage_threshold="${RAY_memory_usage_threshold:-0.99}"
 export PYTHONFAULTHANDLER="${PYTHONFAULTHANDLER:-1}"
 
@@ -36,13 +42,14 @@ unset PYTORCH_CUDA_ALLOC_CONF
 sudo sysctl -w vm.max_map_count=1048576 2>/dev/null || true
 
 # ============================================================================
-# A800 80GB single GPU configuration
+# A800 80GB configuration.  The canonical script preserves its historical
+# defaults; scale wrappers can opt into the explicit efficiency profile.
 # ============================================================================
 
-n_gpus_per_node=1
+n_gpus_per_node="$N_GPUS_PER_NODE"
 
 echo "============================================"
-echo "ALFWorld GRPO training（A800 80GB single GPU）"
+echo "ALFWorld GRPO training（A800 80GB）"
 echo "CUDA_VISIBLE_DEVICES: $CUDA_VISIBLE_DEVICES"
 echo "检测到 GPU 数量: $n_gpus_per_node"
 echo "============================================"
@@ -120,13 +127,41 @@ export MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-10000}"
 export MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-4096}"
 export VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-14096}"
 
-# A800 80GB vLLM / FSDP colocated settings.
-export VLLM_GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.70}"
+# A800 80GB vLLM / FSDP colocated settings.  The profile is deliberately
+# opt-in: mini-batch size is an optimizer choice, not merely a speed flag.
+export SKILL0_A800_EFFICIENCY_PROFILE="${SKILL0_A800_EFFICIENCY_PROFILE:-0}"
+if [[ "$SKILL0_A800_EFFICIENCY_PROFILE" == "1" ]]; then
+  # 0.6B A800 path: match SkillRL's efficient serving/resource controls.
+  # CUDA graphs are enabled by enforce_eager=False unless vLLM falls back.
+  DEFAULT_PPO_MINI_BATCH_SIZE=32
+  DEFAULT_PPO_MICRO_BATCH_SIZE_PER_GPU=4
+  DEFAULT_LOG_PROB_MICRO_BATCH_PER_GPU=16
+  DEFAULT_REF_LOG_PROB_MICRO_BATCH_PER_GPU=8
+  DEFAULT_VLLM_GPU_MEMORY_UTILIZATION=0.80
+  DEFAULT_OPTIMIZER_OFFLOAD=False
+  DEFAULT_REF_PARAM_OFFLOAD=False
+  DEFAULT_ENABLE_CHUNKED_PREFILL=True
+else
+  DEFAULT_PPO_MINI_BATCH_SIZE=$((TRAIN_DATA_SIZE * GROUP_SIZE))
+  DEFAULT_PPO_MICRO_BATCH_SIZE_PER_GPU=1
+  DEFAULT_LOG_PROB_MICRO_BATCH_PER_GPU=1
+  DEFAULT_REF_LOG_PROB_MICRO_BATCH_PER_GPU=1
+  DEFAULT_VLLM_GPU_MEMORY_UTILIZATION=0.70
+  DEFAULT_OPTIMIZER_OFFLOAD=True
+  DEFAULT_REF_PARAM_OFFLOAD=True
+  DEFAULT_ENABLE_CHUNKED_PREFILL=False
+fi
+export PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-$DEFAULT_PPO_MINI_BATCH_SIZE}"
+export PPO_MICRO_BATCH_SIZE_PER_GPU="${PPO_MICRO_BATCH_SIZE_PER_GPU:-$DEFAULT_PPO_MICRO_BATCH_SIZE_PER_GPU}"
+export LOG_PROB_MICRO_BATCH_PER_GPU="${LOG_PROB_MICRO_BATCH_PER_GPU:-$DEFAULT_LOG_PROB_MICRO_BATCH_PER_GPU}"
+export REF_LOG_PROB_MICRO_BATCH_PER_GPU="${REF_LOG_PROB_MICRO_BATCH_PER_GPU:-$DEFAULT_REF_LOG_PROB_MICRO_BATCH_PER_GPU}"
+export VLLM_GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-$DEFAULT_VLLM_GPU_MEMORY_UTILIZATION}"
 export VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-32768}"
 export VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-32}"
-export PPO_MICRO_BATCH_SIZE_PER_GPU="${PPO_MICRO_BATCH_SIZE_PER_GPU:-1}"
-export LOG_PROB_MICRO_BATCH_PER_GPU="${LOG_PROB_MICRO_BATCH_PER_GPU:-1}"
-export OPTIMIZER_OFFLOAD="${OPTIMIZER_OFFLOAD:-True}"
+export OPTIMIZER_OFFLOAD="${OPTIMIZER_OFFLOAD:-$DEFAULT_OPTIMIZER_OFFLOAD}"
+export REF_PARAM_OFFLOAD="${REF_PARAM_OFFLOAD:-$DEFAULT_REF_PARAM_OFFLOAD}"
+export VLLM_ENABLE_CHUNKED_PREFILL="${VLLM_ENABLE_CHUNKED_PREFILL:-$DEFAULT_ENABLE_CHUNKED_PREFILL}"
+export VLLM_ENFORCE_EAGER="${VLLM_ENFORCE_EAGER:-False}"
 export VLLM_TP_SIZE="${VLLM_TP_SIZE:-1}"
 export RESUME_DATALOADER_STATE="${RESUME_DATALOADER_STATE:-False}"
 export ENABLE_RESOURCE_MONITOR="${ENABLE_RESOURCE_MONITOR:-1}"
@@ -186,7 +221,7 @@ python3 -m examples.data_preprocess.prepare \
     --val_data_size "$VAL_DATA_SIZE"
 
 # 构建训练参数
-ppo_mini_batch_size=$((TRAIN_DATA_SIZE * GROUP_SIZE))
+ppo_mini_batch_size="$PPO_MINI_BATCH_SIZE"
 
 ppo_args=(
     algorithm.adv_estimator=grpo
@@ -240,8 +275,8 @@ ppo_args=(
     actor_rollout_ref.rollout.name=vllm
     actor_rollout_ref.rollout.temperature=0.8
     "actor_rollout_ref.rollout.gpu_memory_utilization=$VLLM_GPU_MEMORY_UTILIZATION"
-    actor_rollout_ref.rollout.enable_chunked_prefill=False
-    actor_rollout_ref.rollout.enforce_eager=False
+    "actor_rollout_ref.rollout.enable_chunked_prefill=$VLLM_ENABLE_CHUNKED_PREFILL"
+    "actor_rollout_ref.rollout.enforce_eager=$VLLM_ENFORCE_EAGER"
     actor_rollout_ref.rollout.free_cache_engine=False
     "actor_rollout_ref.rollout.max_model_len=$VLLM_MAX_MODEL_LEN"
     "actor_rollout_ref.rollout.max_num_batched_tokens=$VLLM_MAX_NUM_BATCHED_TOKENS"
@@ -251,9 +286,9 @@ ppo_args=(
     actor_rollout_ref.rollout.val_kwargs.do_sample=True
 
     # Reference policy
-    "actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=$LOG_PROB_MICRO_BATCH_PER_GPU"
+    "actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=$REF_LOG_PROB_MICRO_BATCH_PER_GPU"
     ++actor_rollout_ref.ref.fsdp_config.model_dtype=bf16
-    actor_rollout_ref.ref.fsdp_config.param_offload=True
+    "actor_rollout_ref.ref.fsdp_config.param_offload=$REF_PARAM_OFFLOAD"
 
     # 无效动作惩罚
     actor_rollout_ref.actor.use_invalid_action_penalty=True
@@ -361,7 +396,15 @@ ppo_args=(
   echo "VLLM_MAX_NUM_BATCHED_TOKENS=$VLLM_MAX_NUM_BATCHED_TOKENS"
   echo "VLLM_MAX_NUM_SEQS=$VLLM_MAX_NUM_SEQS"
   echo "VLLM_TP_SIZE=$VLLM_TP_SIZE"
+  echo "VLLM_ENABLE_CHUNKED_PREFILL=$VLLM_ENABLE_CHUNKED_PREFILL"
+  echo "VLLM_ENFORCE_EAGER=$VLLM_ENFORCE_EAGER"
+  echo "SKILL0_A800_EFFICIENCY_PROFILE=$SKILL0_A800_EFFICIENCY_PROFILE"
+  echo "PPO_MINI_BATCH_SIZE=$PPO_MINI_BATCH_SIZE"
+  echo "PPO_MICRO_BATCH_SIZE_PER_GPU=$PPO_MICRO_BATCH_SIZE_PER_GPU"
+  echo "LOG_PROB_MICRO_BATCH_PER_GPU=$LOG_PROB_MICRO_BATCH_PER_GPU"
+  echo "REF_LOG_PROB_MICRO_BATCH_PER_GPU=$REF_LOG_PROB_MICRO_BATCH_PER_GPU"
   echo "OPTIMIZER_OFFLOAD=$OPTIMIZER_OFFLOAD"
+  echo "REF_PARAM_OFFLOAD=$REF_PARAM_OFFLOAD"
   echo "RESUME_DATALOADER_STATE=$RESUME_DATALOADER_STATE"
   echo "DIAGNOSTICS_DIR=$diagnostics_dir"
   echo "GLOBAL_TOP_K_SCHEDULE=$GLOBAL_TOP_K_SCHEDULE"
