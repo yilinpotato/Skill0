@@ -34,7 +34,7 @@ class Tracking:
         logger: Dictionary of initialized logger instances for each backend.
     """
 
-    supported_backend = ["wandb", "mlflow", "swanlab", "vemlp_wandb", "tensorboard", "console", "clearml"]
+    supported_backend = ["wandb", "mlflow", "swanlab", "vemlp_wandb", "tensorboard", "console", "clearml", "jsonl"]
 
     def __init__(self, project_name, experiment_name, default_backend: Union[str, List[str]] = "console", config=None):
         if isinstance(default_backend, str):
@@ -126,6 +126,9 @@ class Tracking:
 
         if "tensorboard" in default_backend:
             self.logger["tensorboard"] = _TensorboardAdapter()
+
+        if "jsonl" in default_backend:
+            self.logger["jsonl"] = _JsonlAdapter()
 
         if "console" in default_backend:
             from verl.utils.logger.aggregate_logger import LocalLogger
@@ -377,3 +380,38 @@ class ValidationGenerationsLogger:
             table_plot=pd.DataFrame.from_records(table),
             iteration=step,
         )
+
+
+class _JsonlAdapter:
+    """Appends every logged metric dict as one JSON line to a .jsonl file.
+
+    Output path is taken from the JSONL_PATH env var, falling back to
+    <JSONL_DIR or cwd>/metrics.jsonl. Each line is {"step": <int>, ...metrics}.
+    """
+
+    def __init__(self):
+        import os
+
+        jsonl_path = os.environ.get("JSONL_PATH", None)
+        if jsonl_path is None:
+            jsonl_dir = os.environ.get("JSONL_DIR", ".")
+            jsonl_path = os.path.join(jsonl_dir, "metrics.jsonl")
+        os.makedirs(os.path.dirname(os.path.abspath(jsonl_path)), exist_ok=True)
+        self.jsonl_path = jsonl_path
+        print(f"Saving metrics jsonl to {jsonl_path}.")
+
+    def log(self, data, step):
+        import json
+
+        record = {"step": step}
+        for key, value in data.items():
+            # numpy / torch scalars -> python float; leave plain types as-is
+            try:
+                record[key] = value.item()
+            except AttributeError:
+                record[key] = value
+        with open(self.jsonl_path, "a") as f:
+            f.write(json.dumps(record) + "\n")
+
+    def finish(self):
+        pass

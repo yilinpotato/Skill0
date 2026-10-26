@@ -142,6 +142,15 @@ class SkillsOnlyMemory(BaseMemory):
     # ------------------------------------------------------------------ #
 
     def _detect_task_type(self, task_description: str) -> str:
+        benchmark = getattr(self, 'controlled_benchmark', None)
+        if benchmark == 'searchqa_live':
+            return 'searchqa'
+        if benchmark == 'scienceworld':
+            mapping = getattr(self, 'benchmark_task_types', {})
+            for goal in sorted(mapping, key=len, reverse=True):
+                if goal in task_description:
+                    return mapping[goal]
+            return 'scienceworld'
         """Infer task category from task_description using keyword rules."""
         task_specific = self.skills.get('task_specific_skills', {})
         goal = task_description.lower()
