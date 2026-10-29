@@ -43,13 +43,19 @@ PICK_AND_PLACE_CORRECT_FORM = (
 )
 
 
-def infer_rollout_task_type(reset_info, initial_observation) -> str:
-    """Infer a canonical ALFWorld/WebShop label for metric accounting only.
+def infer_rollout_task_type(reset_info, initial_observation, *, env_name: str) -> str:
+    """Infer a benchmark-scoped label for metric accounting only.
 
     The label is derived from public reset data and is never added to a model
     prompt.  It keeps Skill0's native metrics compatible with the task buckets
-    emitted by CoSkill and SkillRL.
+    emitted by CoSkill and SkillRL. Other supported benchmarks use a broad
+    benchmark label rather than guessing shopping categories from question text.
     """
+    benchmark = str(env_name).lower().split('/')[0]
+    if benchmark in ('searchqa_live', 'scienceworld'):
+        return benchmark
+    if benchmark not in ('alfworld', 'webshop'):
+        return 'unknown'
     info = reset_info if isinstance(reset_info, dict) else {}
     gamefile = str(info.get("extra.gamefile", "") or "").lower()
     for needle, label in (
@@ -60,9 +66,11 @@ def infer_rollout_task_type(reset_info, initial_observation) -> str:
         ("pick_cool_then_place_in_recep", "cool"),
         ("pick_and_place", "pick_and_place"),
     ):
-        if needle in gamefile:
+        if benchmark == 'alfworld' and needle in gamefile:
             return label
 
+    if benchmark != 'webshop':
+        return 'other'
     text = str(initial_observation or "").lower()
     if any(word in text for word in ("shoe", "boot", "sneaker", "sandal", "heel", "slipper")):
         return "footwear"
@@ -902,6 +910,7 @@ class TrajectoryCollector:
             infer_rollout_task_type(
                 reset_infos[i] if i < len(reset_infos) else {},
                 reset_anchors[i] if reset_anchors is not None and i < len(reset_anchors) else None,
+                env_name=self.config.env.env_name,
             )
             for i in range(batch_size)
         ], dtype=object)
